@@ -1,10 +1,11 @@
 /**
- * engine.js — Main game class: init, update loop, state management
- * 
- * Phase 1 fixes:
- * - No freeze after correct answers in endless mode
- * - Speed dial 1-10, 1x = very slow (3.75 u/s)
- * - Answer-leak validation at encounter spawn
+ * engine.js — Main game class
+ *
+ * Changes in this version:
+ * - Coins spawn continuously (coinSpawnTimer) not just between encounters
+ * - Power-ups are physical 3D collectibles on the track
+ * - TTS rate adapts to game speed
+ * - No freeze after correct answers
  */
 
 import * as THREE from 'three';
@@ -15,11 +16,11 @@ import { buildTrack } from './track.js';
 import { buildPlayer, getPlayerLimbs } from './player.js';
 import { setupInput } from './input.js';
 import { pickCard, spawnGates, updateGateHighlights, flashGateResult, resolveStats } from './gates.js';
-import { spawnObstacle, spawnCoinBatch } from './obstacles.js';
+import { spawnObstacle, spawnCoinBatch, spawnPowerup } from './obstacles.js';
 
 export { SHOP_ITEMS, QUESTS } from './shopdata.js';
 
-const LANE_X = [-3, 0, 3];
+var LANE_X = [-3, 0, 3];
 
 class Game {
   constructor() {
@@ -69,14 +70,16 @@ class Game {
     this.runCards = [];
 
     this.obstacleMeshes = [];
-    this.coinMeshes = [];
+    this.coinMeshes = []; // coins AND power-ups live here
 
     this.feedbackTimer = 0;
     this.teachTimer = 0;
 
     this.powerups = { shield: 0, slow: 0, double: 0, magnet: 0 };
 
-    // State for seamless encounter pipeline
+    // Continuous spawning timers
+    this.coinSpawnTimer = 0;
+    this.powerupSpawnTimer = 0;
     this.waitingForNext = false;
     this.nextEncounterTimer = 0;
 
@@ -87,12 +90,13 @@ class Game {
     this.onHudUpdate = null;
     this.onStreakMilestone = null;
     this.onScorePopup = null;
+    this.onPowerupCollected = null;
   }
 
   init() {
     this.clock = new THREE.Clock();
     this.scene = new THREE.Scene();
-    const theme = getTheme(storage.get('selectedSubjects'));
+    var theme = getTheme(storage.get('selectedSubjects'));
     this.scene.background = new THREE.Color(theme.bg);
 
     this.camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.1, 300);
@@ -105,7 +109,6 @@ class Game {
     this.renderer.shadowMap.enabled = true;
     document.getElementById('gameContainer').appendChild(this.renderer.domElement);
 
-    // Lights
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.8));
     var dir = new THREE.DirectionalLight(0xffffff, 0.9);
     dir.position.set(5, 20, 10);
@@ -141,9 +144,7 @@ class Game {
     this.scene.add(this.playerGroup);
   }
 
-  buildPlayer() {
-    this.rebuildPlayer();
-  }
+  buildPlayer() { this.rebuildPlayer(); }
 
   jump() {
     if (!this.jumping && !this.sliding) {
@@ -185,7 +186,7 @@ class Game {
     this.jumpVel = 0;
     this.legPhase = 0;
 
-    // SPEED FIX: 1-10 scale, 1 = 3.75 u/s, 10 = 37.5 u/s
+    // Speed: 1-10 scale. 1 = 3.75 u/s, 10 = 37.5 u/s
     var mapped = 3.75 + (this.userSpeed - 1) * 3.75;
     this.speed = mode === 'study' ? 3 : mapped;
     this.baseSpeed = this.speed;
@@ -205,6 +206,8 @@ class Game {
     this.gatesActive = false;
     this.waitingForNext = false;
     this.nextEncounterTimer = 0;
+    this.coinSpawnTimer = 0;
+    this.powerupSpawnTimer = 0;
     this.runCards = [];
     this.recentIds = [];
     this.feedbackTimer = 0;
@@ -240,47 +243,9 @@ class Game {
     this.coinMeshes = [];
   }
 
-  // Validate that buzzwords don't leak the answer
-  validateCard(card, gates) {
-    var dominated = false;
-    var ansLower = '';
-    for (var g = 0; g < gates.length; g++) {
-      if (gates[g].correct) {
-        ansLower = gates[g].label.toLowerCase();
-        break;
-      }
-    }
-    // Check each buzzword
-    var ansWords = ansLower.split(/[\s\-\/\(\)]+/).filter(function (w) { return w.length > 3; });
-    for (var b = 0; b < card.bw.length; b++) {
-      var bwLower = card.bw[b].toLowerCase();
-      for (var w = 0; w < ansWords.length; w++) {
-        if (ansWords[w].length > 4 && bwLower.indexOf(ansWords[w]) >= 0) {
-          // Check if any distractor also contains this word (then it's not a leak)
-          var alsoInDistractor = false;
-          for (var d = 0; d < card.d.length; d++) {
-            if (card.d[d].toLowerCase().indexOf(ansWords[w]) >= 0) {
-              alsoInDistractor = true;
-              break;
-            }
-          }
-          if (!alsoInDistractor) {
-            dominated = true;
-            break;
-          }
-        }
-      }
-      if (dominated) break;
-    }
-    return !dominated;
-  }
-
   spawnEncounter() {
     var card = pickCard(this.recentIds, this.mode);
-    if (!card) {
-      this.endRun();
-      return;
-    }
+    if (!card) { this.endRun(); return; }
 
     this.card = card;
     this.recentIds.push(card.id);
@@ -297,12 +262,6 @@ class Game {
       }
     }
 
-    // Validate answer doesn't leak — if it does, just skip validation warning
-    // (we still show the card, but log it for future fixing)
-    if (!this.validateCard(card, this.gates)) {
-      console.warn('Answer-leak detected in card:', card.id, card.bw.join(', '), '->', card.ans);
-    }
-
     this.gateZ = -60;
     for (var g = 0; g < this.gateMeshes.length; g++) this.scene.remove(this.gateMeshes[g]);
     var theme = getTheme(storage.get('selectedSubjects'));
@@ -317,7 +276,8 @@ class Game {
       this.onEncounterStart(card, this.gates);
     }
 
-    audio.speak(card.bw.join('. '));
+    // TTS with speed-adaptive rate
+    audio.speak(card.bw.join('. '), this.speed);
   }
 
   resolveEncounter() {
@@ -332,15 +292,13 @@ class Game {
     this.encountersDone++;
     this.runCards.push({ card: card, ok: ok, choice: gate.label });
 
-    var pointsEarned = 0;
-
     if (ok) {
       this.correct++;
       this.streak++;
       if (this.streak > this.bestStreak) this.bestStreak = this.streak;
 
       var mult = this.powerups.double > 0 ? 2 : 1;
-      pointsEarned = (10 + this.streak * 2) * this.multiplier * mult;
+      var pointsEarned = (10 + this.streak * 2) * this.multiplier * mult;
       if (this.rushing) pointsEarned += this.rushBonus;
       pointsEarned += Math.floor(this.userSpeed * 3);
       this.score += pointsEarned;
@@ -348,13 +306,11 @@ class Game {
 
       if (this.streak % 5 === 0) {
         this.multiplier = Math.min(this.multiplier + 1, 8);
-        if (this.onStreakMilestone) this.onStreakMilestone(this.streak, this.multiplier);
       }
 
       audio.play('correct');
       audio.play('coin');
 
-      // Flash correct gate green briefly
       for (var i = 0; i < this.gateMeshes.length; i++) {
         if (this.gates[i].correct) {
           this.gateMeshes[i].children[0].material.color.setHex(0x00cc55);
@@ -362,7 +318,6 @@ class Game {
       }
 
       storage.incrementQuest('q_10correct');
-
       if (this.onScorePopup) this.onScorePopup(pointsEarned);
     } else {
       this.wrong++;
@@ -382,60 +337,48 @@ class Game {
       }
     }
 
-    // Feedback timers
     this.feedbackTimer = 1.2;
 
-    // Study mode: longer teaching display, slight pause
-    // Endless/other modes: NO PAUSE — immediately pipeline next encounter
+    // No freeze for correct in endless — instant next encounter
     if (this.mode === 'study') {
       this.teachTimer = 3.5;
-      // In study mode, wait before next encounter
       this.waitingForNext = true;
       this.nextEncounterTimer = ok ? 1.5 : 3.5;
     } else if (!ok) {
-      // Wrong answer in non-study: brief teaching, short pause
       this.teachTimer = 2.0;
       this.waitingForNext = true;
       this.nextEncounterTimer = 1.0;
     } else {
-      // CORRECT in endless: NO PAUSE — spawn immediately
+      // CORRECT in endless/daily: near-instant
       this.waitingForNext = true;
-      this.nextEncounterTimer = 0.05; // near-instant
+      this.nextEncounterTimer = 0.05;
     }
 
     if (this.onEncounterResolve) this.onEncounterResolve(card, ok);
 
-    // Power-up chance
-    if (Math.random() < 0.1 && ok) {
-      var types = ['shield', 'slow', 'double', 'magnet'];
-      var t = types[Math.floor(Math.random() * types.length)];
-      this.powerups[t] = t === 'shield' ? 999 : (t === 'slow' ? 8 : (t === 'double' ? 15 : 10));
-      audio.play('powerup');
-    }
-
     if (this.mode === 'daily' && this.encountersDone >= 15) {
       var self2 = this;
       setTimeout(function () { self2.endRun(); }, 600);
-      return;
     }
   }
 
   transitionToNextEncounter() {
-    // Clean old gates
     for (var m = 0; m < this.gateMeshes.length; m++) this.scene.remove(this.gateMeshes[m]);
     this.gateMeshes = [];
 
-    // Maybe spawn obstacle
     if (this.mode !== 'study' && Math.random() < 0.4) {
       spawnObstacle(this.scene, this.obstacleMeshes);
     }
 
-    // Spawn coins
-    var coinCount = 4 + Math.floor(Math.random() * 3);
-    spawnCoinBatch(this.scene, this.coinMeshes, coinCount);
-
-    // Spawn next encounter
     this.spawnEncounter();
+  }
+
+  // Handle collecting a power-up
+  collectPowerup(type) {
+    var duration = type === 'shield' ? 999 : (type === 'slow' ? 8 : (type === 'double' ? 15 : 10));
+    this.powerups[type] = duration;
+    audio.play('powerup');
+    if (this.onPowerupCollected) this.onPowerupCollected(type);
   }
 
   update(dt) {
@@ -443,7 +386,7 @@ class Game {
     var rushMult = this.rushing ? 3.0 : 1.0;
     var move = currentSpeed * rushMult * dt;
 
-    // Lane movement
+    // Lane
     var targetX = LANE_X[this.targetLane];
     this.playerGroup.position.x += (targetX - this.playerGroup.position.x) * Math.min(1, 10 * dt);
     this.currentLane = this.targetLane;
@@ -493,7 +436,7 @@ class Game {
       if (this.gateZ >= 0) this.resolveEncounter();
     }
 
-    // Waiting for next encounter timer (replaces setTimeout)
+    // Next encounter timer
     if (this.waitingForNext) {
       this.nextEncounterTimer -= dt;
       if (this.nextEncounterTimer <= 0) {
@@ -502,7 +445,22 @@ class Game {
       }
     }
 
-    // Obstacles — ALWAYS move even during encounter transition
+    // ===== CONTINUOUS COIN SPAWNING =====
+    this.coinSpawnTimer -= dt;
+    if (this.coinSpawnTimer <= 0) {
+      spawnCoinBatch(this.scene, this.coinMeshes, -55 - Math.random() * 15);
+      // Spawn every 1-2 seconds depending on speed
+      this.coinSpawnTimer = 1.0 + Math.random() * 1.0;
+    }
+
+    // ===== POWER-UP SPAWNING (every 15-25 seconds) =====
+    this.powerupSpawnTimer -= dt;
+    if (this.powerupSpawnTimer <= 0) {
+      spawnPowerup(this.scene, this.coinMeshes);
+      this.powerupSpawnTimer = 15 + Math.random() * 10;
+    }
+
+    // Obstacles
     for (var oi = this.obstacleMeshes.length - 1; oi >= 0; oi--) {
       var ob = this.obstacleMeshes[oi];
       ob.position.z += move;
@@ -525,19 +483,57 @@ class Game {
       }
     }
 
-    // Coins — ALWAYS move
+    // Coins AND Power-ups (both in coinMeshes array)
     for (var ci = this.coinMeshes.length - 1; ci >= 0; ci--) {
       var c = this.coinMeshes[ci];
       c.position.z += move;
-      c.rotation.y += dt * 3;
+
+      // Rotate coins and power-ups
+      if (c.userData.type === 'coin') {
+        c.rotation.y += dt * 3;
+      } else if (c.userData.type === 'powerup') {
+        // Power-ups bob up and down and rotate
+        c.rotation.y += dt * 2;
+        c.position.y = 1.5 + Math.sin(Date.now() * 0.003 + ci) * 0.3;
+      }
+
       if (c.position.z > 1) {
-        if ((c.userData.lane === this.currentLane || this.powerups.magnet > 0) && !c.userData.collected) {
+        var inLane = c.userData.lane === this.currentLane;
+        var magnetActive = this.powerups.magnet > 0;
+
+        if ((inLane || magnetActive) && !c.userData.collected) {
           c.userData.collected = true;
-          this.coins++;
-          audio.play('coin');
+
+          if (c.userData.type === 'powerup') {
+            // Collect power-up
+            this.collectPowerup(c.userData.powerupType);
+          } else {
+            // Collect coin
+            this.coins++;
+            audio.play('coin');
+          }
         }
+
         this.scene.remove(c);
         this.coinMeshes.splice(ci, 1);
+      } else if (c.position.z > -5 && c.position.z < 3) {
+        // Check collection a bit earlier for better feel
+        var closeEnough = Math.abs(LANE_X[this.currentLane] - c.position.x) < 1.5;
+        var magnetPull = this.powerups.magnet > 0;
+
+        if ((closeEnough || magnetPull) && !c.userData.collected) {
+          c.userData.collected = true;
+
+          if (c.userData.type === 'powerup') {
+            this.collectPowerup(c.userData.powerupType);
+          } else {
+            this.coins++;
+            audio.play('coin');
+          }
+
+          this.scene.remove(c);
+          this.coinMeshes.splice(ci, 1);
+        }
       }
     }
 
