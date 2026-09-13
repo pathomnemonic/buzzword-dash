@@ -1,28 +1,39 @@
 /**
  * engine.js — Main game class
  *
- * Includes all Phase 1-3 features:
- * - Continuous coin spawning (coinSpawnTimer)
+ * All features through Phase 3.5:
+ * - Flying environment props (envPropMeshes + envPropSpawnTimer)
+ * - Trail system behind player
+ * - Avatar-based player from shopdata.js
+ * - Continuous coin spawning in patterns
  * - Physical power-up collectibles on track
- * - No freeze after correct answers in endless mode
- * - Speed dial 1-10, 1x = 3.75 u/s
+ * - Camera shake on wrong answer / obstacle hit
+ * - Streak milestone sounds (streak5, streak10)
  * - TTS speed adapts to game speed
- * - Streak milestone sounds
- * - Camera shake on wrong answer
- * - Answer-leak validation
+ * - No freeze after correct answers in endless mode
+ * - Speed dial 1-10 (1 = 3.75 u/s, 10 = 37.5 u/s)
+ * - Answer-leak validation logged to console
+ *
+ * Performance approach per Three.js best practices:
+ * - setAnimationLoop for render loop
+ * - MeshBasicMaterial for always-visible objects (coins, power-ups, glow)
+ * - MeshStandardMaterial for objects that benefit from lighting
+ * - Objects removed from scene when past camera
+ * - Delta time clamped to prevent huge jumps after tab switch
  */
 
 import * as THREE from 'three';
 import { storage } from '../storage.js';
 import { audio } from '../audio.js';
 import { getTheme } from './themes.js';
-import { buildTrack } from './track.js';
+import { buildTrack, spawnEnvProp } from './track.js';
 import { buildPlayer, getPlayerLimbs } from './player.js';
 import { setupInput } from './input.js';
 import { pickCard, spawnGates, updateGateHighlights, flashGateResult, resolveStats } from './gates.js';
 import { spawnObstacle, spawnCoinBatch, spawnPowerup } from './obstacles.js';
+import { TrailSystem } from './trails.js';
 
-export { SHOP_ITEMS, QUESTS } from './shopdata.js';
+export { SHOP_ITEMS, QUESTS, AVATARS } from './shopdata.js';
 
 var LANE_X = [-3, 0, 3];
 
@@ -34,6 +45,7 @@ class Game {
     this.clock = null;
     this.playerGroup = null;
     this.limbs = null;
+    this.trailSystem = null;
 
     this.running = false;
     this.paused = false;
@@ -75,6 +87,7 @@ class Game {
 
     this.obstacleMeshes = [];
     this.coinMeshes = [];
+    this.envPropMeshes = [];
 
     this.feedbackTimer = 0;
     this.teachTimer = 0;
@@ -83,6 +96,7 @@ class Game {
 
     this.coinSpawnTimer = 0;
     this.powerupSpawnTimer = 0;
+    this.envPropSpawnTimer = 0;
     this.waitingForNext = false;
     this.nextEncounterTimer = 0;
 
@@ -116,6 +130,7 @@ class Game {
     this.renderer.shadowMap.enabled = true;
     document.getElementById('gameContainer').appendChild(this.renderer.domElement);
 
+    // Lights
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.8));
     var dir = new THREE.DirectionalLight(0xffffff, 0.9);
     dir.position.set(5, 20, 10);
@@ -125,6 +140,7 @@ class Game {
 
     buildTrack(this.scene, theme);
     this.rebuildPlayer();
+    this.trailSystem = new TrailSystem(this.scene);
     setupInput(this.renderer, this);
 
     var self = this;
@@ -215,6 +231,7 @@ class Game {
     this.nextEncounterTimer = 0;
     this.coinSpawnTimer = 0;
     this.powerupSpawnTimer = 8;
+    this.envPropSpawnTimer = 0.5;
     this.shakeTimer = 0;
     this.runCards = [];
     this.recentIds = [];
@@ -250,6 +267,8 @@ class Game {
     this.obstacleMeshes = [];
     for (i = 0; i < this.coinMeshes.length; i++) this.scene.remove(this.coinMeshes[i]);
     this.coinMeshes = [];
+    for (i = 0; i < this.envPropMeshes.length; i++) this.scene.remove(this.envPropMeshes[i]);
+    this.envPropMeshes = [];
   }
 
   collectPowerup(type) {
@@ -301,6 +320,7 @@ class Game {
 
     if (this.onEncounterStart) this.onEncounterStart(card, this.gates);
 
+    // TTS with speed-adaptive rate
     audio.speak(card.bw.join('. '), this.speed);
   }
 
@@ -330,7 +350,7 @@ class Game {
       this.score += pointsEarned;
       this.coins += 1 + Math.floor(this.streak / 3);
 
-      // Streak milestones
+      // Streak milestones with escalating sounds
       if (this.streak % 5 === 0) {
         this.multiplier = Math.min(this.multiplier + 1, 8);
         if (this.streak >= 10) {
@@ -374,6 +394,7 @@ class Game {
 
     this.feedbackTimer = 1.2;
 
+    // No freeze for correct in endless — instant next encounter
     if (this.mode === 'study') {
       this.teachTimer = 3.5;
       this.waitingForNext = true;
@@ -383,6 +404,7 @@ class Game {
       this.waitingForNext = true;
       this.nextEncounterTimer = 1.0;
     } else {
+      // CORRECT in endless/daily: near-instant
       this.waitingForNext = true;
       this.nextEncounterTimer = 0.05;
     }
@@ -411,7 +433,7 @@ class Game {
     var rushMult = this.rushing ? 3.0 : 1.0;
     var move = currentSpeed * rushMult * dt;
 
-    // Lane
+    // ===== PLAYER MOVEMENT =====
     var targetX = LANE_X[this.targetLane];
     this.playerGroup.position.x += (targetX - this.playerGroup.position.x) * Math.min(1, 10 * dt);
     this.currentLane = this.targetLane;
@@ -444,14 +466,33 @@ class Game {
     if (!this.jumping && !this.sliding && this.limbs) {
       this.legPhase += currentSpeed * rushMult * dt * 0.8;
       var sw = Math.sin(this.legPhase) * 0.35;
-      this.limbs.leftLeg.rotation.x = sw;
-      this.limbs.rightLeg.rotation.x = -sw;
-      this.limbs.leftArm.rotation.x = -sw * 0.8;
-      this.limbs.rightArm.rotation.x = sw * 0.8;
+      if (this.limbs.leftLeg) {
+        this.limbs.leftLeg.rotation.x = sw;
+        this.limbs.rightLeg.rotation.x = -sw;
+      }
+      if (this.limbs.leftArm) {
+        this.limbs.leftArm.rotation.x = -sw * 0.8;
+        this.limbs.rightArm.rotation.x = sw * 0.8;
+      }
+      // Cape flutter (if avatar has one)
+      if (this.limbs.cape) {
+        this.limbs.cape.rotation.x = 0.15 + Math.sin(this.legPhase * 1.5) * 0.1;
+      }
       this.playerGroup.position.y = this.playerY + Math.abs(Math.sin(this.legPhase)) * 0.04;
     }
 
-    // Camera shake
+    // ===== TRAIL SYSTEM =====
+    if (this.trailSystem) {
+      this.trailSystem.update(
+        dt,
+        this.playerGroup.position.x,
+        this.playerGroup.position.y,
+        this.playerGroup.position.z,
+        this.streak
+      );
+    }
+
+    // ===== CAMERA SHAKE =====
     if (this.shakeTimer > 0) {
       this.shakeTimer -= dt;
       var intensity = this.shakeTimer * 3;
@@ -462,7 +503,7 @@ class Game {
       this.camera.position.y = this.cameraBasePos.y;
     }
 
-    // Gates
+    // ===== GATES =====
     if (this.gatesActive) {
       this.gateZ += move;
       for (var i = 0; i < this.gateMeshes.length; i++) {
@@ -481,21 +522,42 @@ class Game {
       }
     }
 
-    // Continuous coin spawning
+    // ===== CONTINUOUS COIN SPAWNING =====
     this.coinSpawnTimer -= dt;
     if (this.coinSpawnTimer <= 0) {
       spawnCoinBatch(this.scene, this.coinMeshes);
       this.coinSpawnTimer = 0.8 + Math.random() * 1.2;
     }
 
-    // Power-up spawning
+    // ===== POWER-UP SPAWNING =====
     this.powerupSpawnTimer -= dt;
     if (this.powerupSpawnTimer <= 0) {
       spawnPowerup(this.scene, this.coinMeshes);
       this.powerupSpawnTimer = 15 + Math.random() * 10;
     }
 
-    // Obstacles
+    // ===== FLYING ENVIRONMENT PROPS =====
+    this.envPropSpawnTimer -= dt;
+    if (this.envPropSpawnTimer <= 0) {
+      spawnEnvProp(this.scene, this.envPropMeshes, storage.get('selectedSubjects'));
+      this.envPropSpawnTimer = 1.5 + Math.random() * 2;
+    }
+
+    // Move env props toward camera and remove when past
+    for (var ei = this.envPropMeshes.length - 1; ei >= 0; ei--) {
+      var ep = this.envPropMeshes[ei];
+      // Props move at 70% of game speed for parallax depth effect
+      ep.position.z += move * 0.7;
+      // Slow rotation for visual interest
+      ep.rotation.y += dt * 0.3;
+      // Remove when past camera
+      if (ep.position.z > 10) {
+        this.scene.remove(ep);
+        this.envPropMeshes.splice(ei, 1);
+      }
+    }
+
+    // ===== OBSTACLES =====
     for (var oi = this.obstacleMeshes.length - 1; oi >= 0; oi--) {
       var ob = this.obstacleMeshes[oi];
       ob.position.z += move;
@@ -519,7 +581,7 @@ class Game {
       }
     }
 
-    // Coins and power-ups
+    // ===== COINS AND POWER-UPS =====
     for (var ci = this.coinMeshes.length - 1; ci >= 0; ci--) {
       var c = this.coinMeshes[ci];
       c.position.z += move;
@@ -539,13 +601,13 @@ class Game {
         continue;
       }
 
-      // Collection check (generous zone)
+      // Collection check (generous zone for good game feel)
       if (c.position.z > -3 && c.position.z < 2 && !c.userData.collected) {
         var inLane = c.userData.lane === this.currentLane;
         var magnetActive = this.powerups.magnet > 0;
         var closeEnough = Math.abs(LANE_X[this.currentLane] - c.position.x) < 1.8;
 
-        if ((inLane || closeEnough || magnetActive)) {
+        if (inLane || closeEnough || magnetActive) {
           c.userData.collected = true;
 
           if (c.userData.type === 'powerup') {
@@ -561,21 +623,22 @@ class Game {
       }
     }
 
-    // Power-up timers
+    // ===== POWER-UP TIMERS =====
     var puKeys = ['shield', 'slow', 'double', 'magnet'];
     for (var pk = 0; pk < puKeys.length; pk++) {
       if (this.powerups[puKeys[pk]] > 0) this.powerups[puKeys[pk]] -= dt;
     }
 
-    // Feedback timers
+    // ===== FEEDBACK TIMERS =====
     if (this.feedbackTimer > 0) this.feedbackTimer -= dt;
     if (this.teachTimer > 0) this.teachTimer -= dt;
 
-    // Speed progression
+    // ===== SPEED PROGRESSION =====
     if (this.mode !== 'study') {
       this.speed = Math.min(this.baseSpeed * 2.0, this.baseSpeed + this.encountersDone * 0.3);
     }
 
+    // ===== HUD UPDATE CALLBACK =====
     if (this.onHudUpdate) this.onHudUpdate();
   }
 
