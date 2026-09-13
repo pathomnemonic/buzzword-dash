@@ -255,7 +255,7 @@ class UI {
         }).join('');
     };
     document.getElementById('shopItems').innerHTML =
-      renderGroup('skin', '👕 Outfits') + renderGroup('hat', '🧢 Headwear') + renderGroup('gear', '🩺 Gear');
+            renderGroup('skin', '👕 Avatars') + renderGroup('hat', '🧢 Headwear') + renderGroup('trail', '✨ Trails') + renderGroup('gear', '🩺 Gear');
 
     document.querySelectorAll('[data-buy]').forEach(function (btn) {
       btn.addEventListener('click', function () {
