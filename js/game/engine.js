@@ -1,20 +1,43 @@
 /**
  * engine.js — Main game class
  *
- * All features through Phase 3.5:
- * - Flying environment props (envPropMeshes + envPropSpawnTimer)
- * - Trail system behind player
- * - Avatar-based player from shopdata.js
- * - Continuous coin spawning in patterns
- * - Physical power-up collectibles on track
- * - Camera shake on wrong answer / obstacle hit
- * - Streak milestone sounds (streak5, streak10)
- * - TTS speed adapts to game speed
+ * All features through Final Phase:
+ *
+ * GAMEPLAY:
+ * - 3-lane endless runner with gates, obstacles, coins, power-ups
+ * - Continue with coins (pay CONTINUE_COST for extra life on death)
  * - No freeze after correct answers in endless mode
  * - Speed dial 1-10 (1 = 3.75 u/s, 10 = 37.5 u/s)
+ * - Daily mode passes dailyIndex for deterministic card selection
+ *
+ * VISUALS:
+ * - Flying environment props (specialty-themed, parallax depth)
+ * - Player trail system (purchasable trail effects)
  * - Speed lines at high speeds and during rush
+ * - Camera shake on wrong answer / obstacle hit
  * - Cape flutter animation for superhero avatar
- * - Answer-leak validation logged to console
+ * - Coin magnet animation (coins curve toward player when magnet active)
+ *
+ * AUDIO:
+ * - TTS speed adapts to game speed
+ * - Streak milestone sounds with escalating pitch
+ * - Achievement, continue, and powerup sounds
+ *
+ * PROGRESSION:
+ * - Achievement checking at end of run
+ * - Lifetime coin tracking via storage.addCoins()
+ * - Quest progress tracking
+ *
+ * PERFORMANCE:
+ * - GPU resource disposal on object removal per Three.js best practices:
+ *   "Removing an object from the scene doesn't free its GPU memory.
+ *    Dispose geometries, materials, and textures explicitly" [1]
+ * - Delta time clamped to prevent huge jumps after tab switch
+ * - setAnimationLoop for render loop [1]
+ * - Speed line geometry/material disposed on removal
+ *
+ * NIGHT MODE:
+ * - Toggling night mode updates scene background color via getTheme()
  */
 
 import * as THREE from 'three';
@@ -24,13 +47,66 @@ import { getTheme } from './themes.js';
 import { buildTrack, spawnEnvProp } from './track.js';
 import { buildPlayer, getPlayerLimbs } from './player.js';
 import { setupInput } from './input.js';
-import { pickCard, spawnGates, updateGateHighlights, flashGateResult, resolveStats } from './gates.js';
+import { pickCard, spawnGates, updateGateHighlights, flashGateResult, resolveStats, validateCardNoLeak } from './gates.js';
 import { spawnObstacle, spawnCoinBatch, spawnPowerup } from './obstacles.js';
 import { TrailSystem } from './trails.js';
 
-export { SHOP_ITEMS, QUESTS, AVATARS } from './shopdata.js';
+export { SHOP_ITEMS, QUESTS, AVATARS, ACHIEVEMENTS, CONTINUE_COST } from './shopdata.js';
+import { CONTINUE_COST } from './shopdata.js';
 
 var LANE_X = [-3, 0, 3];
+
+/**
+ * Recursively dispose all geometries and materials in a Three.js object tree.
+ * Per Three.js best practices: "Dispose geometries, materials, and textures
+ * explicitly" when removing objects from the scene [1].
+ * Forum consensus confirms: traverse children, dispose geometry, dispose
+ * material (including its textures), then remove from scene [4].
+ */
+function disposeObject(obj) {
+  if (!obj) return;
+  // Traverse children first
+  if (obj.children) {
+    for (var i = obj.children.length - 1; i >= 0; i--) {
+      disposeObject(obj.children[i]);
+    }
+  }
+  // Dispose geometry
+  if (obj.geometry) {
+    obj.geometry.dispose();
+  }
+  // Dispose material(s)
+  if (obj.material) {
+    if (Array.isArray(obj.material)) {
+      for (var m = 0; m < obj.material.length; m++) {
+        disposeMaterial(obj.material[m]);
+      }
+    } else {
+      disposeMaterial(obj.material);
+    }
+  }
+}
+
+function disposeMaterial(material) {
+  if (!material) return;
+  // Dispose any textures on the material
+  var keys = Object.keys(material);
+  for (var i = 0; i < keys.length; i++) {
+    var value = material[keys[i]];
+    if (value && typeof value === 'object' && typeof value.dispose === 'function' && value.isTexture) {
+      value.dispose();
+    }
+  }
+  material.dispose();
+}
+
+/**
+ * Remove an object from scene and dispose its GPU resources.
+ */
+function removeAndDispose(scene, obj) {
+  scene.remove(obj);
+  disposeObject(obj);
+}
 
 class Game {
   constructor() {
@@ -68,6 +144,7 @@ class Game {
     this.correct = 0;
     this.wrong = 0;
     this.lives = 3;
+    this.continued = false;
 
     this.rushing = false;
     this.rushBonus = 0;
@@ -109,6 +186,8 @@ class Game {
     this.onStreakMilestone = null;
     this.onScorePopup = null;
     this.onPowerupCollected = null;
+    this.onAchievementUnlocked = null;
+    this.onContinuePrompt = null;
   }
 
   init() {
@@ -190,6 +269,12 @@ class Game {
     document.getElementById('rushEl').classList.add('show');
   }
 
+  // Update night mode on the 3D scene (called when setting is toggled)
+  updateNightMode() {
+    var theme = getTheme(storage.get('selectedSubjects'));
+    this.scene.background.set(theme.bg);
+  }
+
   start(mode) {
     this.mode = mode;
     this.userSpeed = storage.get('userSpeed') || 1;
@@ -220,6 +305,7 @@ class Game {
     this.correct = 0;
     this.wrong = 0;
     this.lives = mode === 'study' ? 99 : 3;
+    this.continued = false;
     this.rushing = false;
     this.rushBonus = 0;
     this.card = null;
@@ -259,13 +345,13 @@ class Game {
 
   cleanupObjects() {
     var i;
-    for (i = 0; i < this.gateMeshes.length; i++) this.scene.remove(this.gateMeshes[i]);
+    for (i = 0; i < this.gateMeshes.length; i++) removeAndDispose(this.scene, this.gateMeshes[i]);
     this.gateMeshes = [];
-    for (i = 0; i < this.obstacleMeshes.length; i++) this.scene.remove(this.obstacleMeshes[i]);
+    for (i = 0; i < this.obstacleMeshes.length; i++) removeAndDispose(this.scene, this.obstacleMeshes[i]);
     this.obstacleMeshes = [];
-    for (i = 0; i < this.coinMeshes.length; i++) this.scene.remove(this.coinMeshes[i]);
+    for (i = 0; i < this.coinMeshes.length; i++) removeAndDispose(this.scene, this.coinMeshes[i]);
     this.coinMeshes = [];
-    for (i = 0; i < this.envPropMeshes.length; i++) this.scene.remove(this.envPropMeshes[i]);
+    for (i = 0; i < this.envPropMeshes.length; i++) removeAndDispose(this.scene, this.envPropMeshes[i]);
     this.envPropMeshes = [];
     for (i = 0; i < this.speedLines.length; i++) {
       this.speedLines[i].geometry.dispose();
@@ -293,8 +379,25 @@ class Game {
     this.shakeTimer = 0.15;
   }
 
+  // Continue with coins — called from UI when player chooses to continue
+  doContinue() {
+    if (storage.spendCoins(CONTINUE_COST)) {
+      this.lives = 1;
+      this.continued = true;
+      this.running = true;
+      this.paused = false;
+      audio.play('continue');
+      this.clock.getDelta();
+      // Resume by spawning next encounter
+      this.spawnEncounter();
+      return true;
+    }
+    return false;
+  }
+
   spawnEncounter() {
-    var card = pickCard(this.recentIds, this.mode);
+    // For daily mode, pass the encounter index for deterministic selection
+    var card = pickCard(this.recentIds, this.mode, this.encountersDone);
     if (!card) { this.endRun(); return; }
 
     this.card = card;
@@ -312,8 +415,11 @@ class Game {
       }
     }
 
+    // Answer-leak validation (log only, don't block)
+    validateCardNoLeak(card, this.gates);
+
     this.gateZ = -60;
-    for (var g = 0; g < this.gateMeshes.length; g++) this.scene.remove(this.gateMeshes[g]);
+    for (var g = 0; g < this.gateMeshes.length; g++) removeAndDispose(this.scene, this.gateMeshes[g]);
     var theme = getTheme(storage.get('selectedSubjects'));
     this.gateMeshes = spawnGates(this.scene, this.gates, this.currentLane, theme);
 
@@ -328,6 +434,7 @@ class Game {
     audio.speak(card.bw.join('. '), this.speed);
   }
 
+// === PART 1 END === (Part 2 continues with resolveEncounter, update, endRun)
   resolveEncounter() {
     this.gatesActive = false;
     document.getElementById('rushEl').classList.remove('show');
@@ -357,17 +464,15 @@ class Game {
       // Streak milestones with escalating sounds
       if (this.streak % 5 === 0) {
         this.multiplier = Math.min(this.multiplier + 1, 8);
-        if (this.streak >= 10) {
-          audio.play('streak10');
-        } else {
-          audio.play('streak5');
-        }
+        // Use escalating pitch sound based on streak count
+        audio.playStreakSound(this.streak);
         if (this.onStreakMilestone) this.onStreakMilestone(this.streak, this.multiplier);
       } else {
         audio.play('correct');
       }
       audio.play('coin');
 
+      // Flash correct gate green
       for (var i = 0; i < this.gateMeshes.length; i++) {
         if (this.gates[i].correct) {
           this.gateMeshes[i].children[0].material.color.setHex(0x00cc55);
@@ -387,18 +492,31 @@ class Game {
       flashGateResult(this.gateMeshes, this.gates, this.currentLane);
       this.triggerShake();
 
+      // Check for death
       if (this.lives <= 0 && this.mode !== 'study') {
         this.feedbackTimer = 1.5;
         if (this.onEncounterResolve) this.onEncounterResolve(card, ok);
-        var self = this;
-        setTimeout(function () { self.endRun(); }, 500);
+
+        // Check if player can continue
+        var canContinue = !this.continued && storage.get('coins') >= CONTINUE_COST;
+
+        if (canContinue && this.onContinuePrompt) {
+          // Pause the game and show continue prompt
+          this.running = false;
+          this.onContinuePrompt(CONTINUE_COST);
+        } else {
+          // No continue available — end run after delay
+          var self = this;
+          setTimeout(function () { self.endRun(); }, 500);
+        }
         return;
       }
     }
 
     this.feedbackTimer = 1.2;
 
-    // No freeze for correct in endless — instant next encounter
+    // Timing for next encounter
+    // No freeze for correct in endless — near-instant transition
     if (this.mode === 'study') {
       this.teachTimer = 3.5;
       this.waitingForNext = true;
@@ -422,9 +540,11 @@ class Game {
   }
 
   transitionToNextEncounter() {
-    for (var m = 0; m < this.gateMeshes.length; m++) this.scene.remove(this.gateMeshes[m]);
+    // Clean old gates with proper GPU disposal [1]
+    for (var m = 0; m < this.gateMeshes.length; m++) removeAndDispose(this.scene, this.gateMeshes[m]);
     this.gateMeshes = [];
 
+    // Maybe spawn obstacle between encounters
     if (this.mode !== 'study' && Math.random() < 0.4) {
       spawnObstacle(this.scene, this.obstacleMeshes);
     }
@@ -497,6 +617,9 @@ class Game {
     }
 
     // ===== CAMERA SHAKE =====
+    // Based on the GDC "Juicing Your Cameras With Math" approach:
+    // use a trauma value that decays over time, with noise-based
+    // offset applied to camera position [7]
     if (this.shakeTimer > 0) {
       this.shakeTimer -= dt;
       var intensity = this.shakeTimer * 3;
@@ -510,8 +633,8 @@ class Game {
     // ===== GATES =====
     if (this.gatesActive) {
       this.gateZ += move;
-      for (var i = 0; i < this.gateMeshes.length; i++) {
-        this.gateMeshes[i].position.z = this.gateZ;
+      for (var gi = 0; gi < this.gateMeshes.length; gi++) {
+        this.gateMeshes[gi].position.z = this.gateZ;
       }
       updateGateHighlights(this.gateMeshes, this.currentLane);
       if (this.gateZ >= 0) this.resolveEncounter();
@@ -547,18 +670,20 @@ class Game {
       this.envPropSpawnTimer = 1.5 + Math.random() * 2;
     }
 
-    // Move env props toward camera with parallax (70% speed) and remove when past
+    // Move env props toward camera with parallax depth (70% speed)
+    // and remove + dispose when past camera
     for (var ei = this.envPropMeshes.length - 1; ei >= 0; ei--) {
       var ep = this.envPropMeshes[ei];
       ep.position.z += move * 0.7;
       ep.rotation.y += dt * 0.3;
       if (ep.position.z > 10) {
-        this.scene.remove(ep);
+        // Proper GPU disposal per Three.js best practices [1]
+        removeAndDispose(this.scene, ep);
         this.envPropMeshes.splice(ei, 1);
       }
     }
 
-    // ===== SPEED LINES (appear at high speeds and during rush) =====
+    // ===== SPEED LINES (at high speeds and during rush) =====
     var speedRatio = this.speed / this.baseSpeed;
     if (speedRatio > 1.3 || this.rushing) {
       this.speedLineTimer -= dt;
@@ -586,15 +711,15 @@ class Game {
       }
     }
 
-    // Move and clean speed lines
+    // Move and clean speed lines with proper disposal [1]
     for (var sli = this.speedLines.length - 1; sli >= 0; sli--) {
       var sl = this.speedLines[sli];
       sl.position.z += move * 2.5;
       sl.material.opacity -= dt * 0.5;
       if (sl.position.z > 10 || sl.material.opacity <= 0) {
-        this.scene.remove(sl);
         sl.geometry.dispose();
         sl.material.dispose();
+        this.scene.remove(sl);
         this.speedLines.splice(sli, 1);
       }
     }
@@ -614,11 +739,21 @@ class Game {
               this.lives--;
               audio.play('wrong');
               this.triggerShake();
-              if (this.lives <= 0 && this.mode !== 'study') this.endRun();
+              if (this.lives <= 0 && this.mode !== 'study') {
+                // Check continue availability
+                var canCont = !this.continued && storage.get('coins') >= CONTINUE_COST;
+                if (canCont && this.onContinuePrompt) {
+                  this.running = false;
+                  this.onContinuePrompt(CONTINUE_COST);
+                } else {
+                  this.endRun();
+                }
+              }
             }
           }
         }
-        this.scene.remove(ob);
+        // Proper GPU disposal [1]
+        removeAndDispose(this.scene, ob);
         this.obstacleMeshes.splice(oi, 1);
       }
     }
@@ -638,7 +773,7 @@ class Game {
 
       // Remove if past player
       if (c.position.z > 3) {
-        this.scene.remove(c);
+        removeAndDispose(this.scene, c);
         this.coinMeshes.splice(ci, 1);
         continue;
       }
@@ -648,6 +783,13 @@ class Game {
         var inLane = c.userData.lane === this.currentLane;
         var magnetActive = this.powerups.magnet > 0;
         var closeEnough = Math.abs(LANE_X[this.currentLane] - c.position.x) < 1.8;
+
+        // Coin magnet animation: when magnet active, coins curve toward player
+        if (magnetActive && !inLane && c.position.z > -5) {
+          var playerX = this.playerGroup.position.x;
+          var coinX = c.position.x;
+          c.position.x += (playerX - coinX) * dt * 5; // smooth curve toward player
+        }
 
         if (inLane || closeEnough || magnetActive) {
           c.userData.collected = true;
@@ -659,7 +801,7 @@ class Game {
             audio.play('coin');
           }
 
-          this.scene.remove(c);
+          removeAndDispose(this.scene, c);
           this.coinMeshes.splice(ci, 1);
         }
       }
@@ -704,7 +846,8 @@ class Game {
     document.getElementById('rushEl').classList.remove('show');
     this.camera.position.copy(this.cameraBasePos);
 
-    storage.set('coins', storage.get('coins') + this.coins);
+    // Save coins with lifetime tracking
+    storage.addCoins(this.coins);
     if (this.score > storage.get('bestScore')) storage.set('bestScore', this.score);
     if (this.bestStreak > storage.get('bestStreak')) storage.set('bestStreak', this.bestStreak);
 
@@ -716,6 +859,21 @@ class Game {
     }
 
     storage.incrementQuest('q_25enc', this.encountersDone);
+
+    // Check achievements at end of run
+    var runData = {
+      score: this.score,
+      perfect: this.wrong === 0 && this.correct > 0,
+      speed: this.userSpeed
+    };
+    var newAchievements = storage.checkAchievements(runData);
+
+    // Notify UI about newly unlocked achievements
+    if (newAchievements.length > 0 && this.onAchievementUnlocked) {
+      this.onAchievementUnlocked(newAchievements);
+    }
+
+    // Proper GPU cleanup of all game objects [1]
     this.cleanupObjects();
 
     if (this.onRunEnd) this.onRunEnd();
