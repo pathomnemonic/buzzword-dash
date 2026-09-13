@@ -6,7 +6,6 @@
 <title>Buzzword Dash — USMLE & COMLEX Board Runner</title>
 <link rel="stylesheet" href="css/style.css">
 
-<!-- Import map for Three.js from CDN — no npm/bundler needed -->
 <script type="importmap">
 {
   "imports": {
@@ -21,7 +20,7 @@
 <!-- Three.js renders here -->
 <div id="gameContainer"></div>
 
-<!-- HUD overlay -->
+<!-- HUD overlay (above 3D canvas) -->
 <div id="hud" class="off">
   <div class="hud-row">
     <div class="hud-pill">🪙 <span id="hudCoins">0</span></div>
@@ -32,6 +31,12 @@
     <div class="hud-pill clickable" id="pauseBtn">⏸</div>
   </div>
   <div id="buzzBox"><div id="buzzText">GET READY</div></div>
+  <!-- Answer choices as HTML overlay — always readable -->
+  <div id="answerRow">
+    <div class="answer-choice" id="ans0"><span class="lane-label">← LEFT</span><span id="ansText0"></span></div>
+    <div class="answer-choice" id="ans1"><span class="lane-label">CENTER</span><span id="ansText1"></span></div>
+    <div class="answer-choice" id="ans2"><span class="lane-label">RIGHT →</span><span id="ansText2"></span></div>
+  </div>
   <div id="feedbackEl"></div>
   <div id="rushEl">⚡ RUSHING ⚡</div>
   <div id="teachEl"></div>
@@ -52,7 +57,10 @@
 <div class="tutorial-overlay" id="tutorialOverlay">
   <div class="tut-page" id="tutPage"></div>
   <div class="tut-dots" id="tutDots"></div>
-  <button class="btn btn-primary" id="tutNextBtn">Next →</button>
+  <div class="tut-buttons">
+    <button class="btn btn-outline btn-sm" id="tutCloseBtn">✕ Close</button>
+    <button class="btn btn-primary" id="tutNextBtn">Next →</button>
+  </div>
 </div>
 
 <!-- ==================== SCREENS ==================== -->
@@ -65,6 +73,7 @@
       <p>USMLE & COMLEX Board Runner</p>
     </div>
     <div class="stat-row" id="homeStats"></div>
+    <div class="save-indicator">💾 Progress auto-saved</div>
 
     <div class="speed-dial">
       <label>🏎️ Speed</label>
@@ -102,7 +111,12 @@
 
     <div class="subject-section">
       <h3>📚 Subjects</h3>
+      <div class="subject-controls">
+        <button class="btn btn-outline btn-sm" id="selectAllSubjects">Select All</button>
+        <button class="btn btn-outline btn-sm" id="deselectAllSubjects">Deselect All</button>
+      </div>
       <div class="subject-scroll" id="subjectScroll"></div>
+      <p style="font-size:10px;color:var(--text-muted);margin-top:4px">💡 Tap a subject to toggle it. Long-press to select <em>only</em> that subject.</p>
     </div>
 
     <div style="display:flex;gap:6px;margin-top:10px">
