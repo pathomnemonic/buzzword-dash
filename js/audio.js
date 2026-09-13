@@ -1,10 +1,13 @@
 /**
  * audio.js — Sound effects, procedural music, and TTS
  *
- * TTS rate adjusts based on game speed so the voice
- * finishes speaking before gates arrive.
- * SpeechSynthesisUtterance.rate ranges from 0.1 to 10,
- * where 1 is normal speed.
+ * TTS rate automatically adapts to game speed so the voice
+ * finishes speaking before gates arrive at the player.
+ * SpeechSynthesisUtterance.rate accepts 0.1 to 10, with 1
+ * being normal speaking speed.
+ *
+ * Background music is procedurally generated using Web Audio API
+ * OscillatorNode and GainNode — no audio files needed.
  */
 
 import { storage } from './storage.js';
@@ -61,6 +64,7 @@ class AudioEngine {
         g.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
         o.connect(g); o.start(t); o.stop(t + 0.25);
         break;
+
       case 'wrong':
         o.type = 'sawtooth';
         o.frequency.setValueAtTime(200, t);
@@ -69,6 +73,7 @@ class AudioEngine {
         g.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
         o.connect(g); o.start(t); o.stop(t + 0.18);
         break;
+
       case 'coin':
         o.type = 'sine';
         o.frequency.setValueAtTime(988, t);
@@ -77,6 +82,7 @@ class AudioEngine {
         g.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
         o.connect(g); o.start(t); o.stop(t + 0.08);
         break;
+
       case 'rush':
         o.type = 'sine';
         o.frequency.setValueAtTime(600, t);
@@ -85,6 +91,7 @@ class AudioEngine {
         g.gain.exponentialRampToValueAtTime(0.001, t + 0.13);
         o.connect(g); o.start(t); o.stop(t + 0.13);
         break;
+
       case 'countdown':
         o.type = 'sine';
         o.frequency.setValueAtTime(660, t);
@@ -92,6 +99,7 @@ class AudioEngine {
         g.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
         o.connect(g); o.start(t); o.stop(t + 0.1);
         break;
+
       case 'powerup':
         o.type = 'sine';
         o.frequency.setValueAtTime(440, t);
@@ -100,6 +108,30 @@ class AudioEngine {
         g.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
         o.connect(g); o.start(t); o.stop(t + 0.35);
         break;
+
+      case 'streak5':
+        o.type = 'sine';
+        o.frequency.setValueAtTime(523, t);
+        o.frequency.setValueAtTime(659, t + 0.06);
+        o.frequency.setValueAtTime(784, t + 0.12);
+        o.frequency.setValueAtTime(1047, t + 0.18);
+        g.gain.setValueAtTime(vol * 0.2, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+        o.connect(g); o.start(t); o.stop(t + 0.35);
+        break;
+
+      case 'streak10':
+        o.type = 'sine';
+        o.frequency.setValueAtTime(523, t);
+        o.frequency.setValueAtTime(784, t + 0.05);
+        o.frequency.setValueAtTime(1047, t + 0.1);
+        o.frequency.setValueAtTime(1319, t + 0.15);
+        o.frequency.setValueAtTime(1568, t + 0.2);
+        g.gain.setValueAtTime(vol * 0.22, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+        o.connect(g); o.start(t); o.stop(t + 0.4);
+        break;
+
       default:
         o.type = 'sine';
         o.frequency.setValueAtTime(440, t);
@@ -110,29 +142,23 @@ class AudioEngine {
   }
 
   // --- TTS with speed-adaptive rate ---
-  // gameSpeed: current game speed in units/sec
-  // gateDistance: how far away gates spawn (default 60)
   speak(text, gameSpeed) {
     if (!storage.get('ttsEnabled') || !window.speechSynthesis) return;
 
-    // Calculate how long gates take to arrive
-    // gateDistance = 60 units, speed = gameSpeed units/sec
-    // arrivalTime = 60 / gameSpeed
-    var arrivalTime = 60 / (gameSpeed || 15);
+    // Gate distance = 60 units
+    // Arrival time = 60 / gameSpeed
+    var arrivalTime = 60 / (gameSpeed || 10);
 
-    // Estimate speech duration at rate 1.0
-    // Average English: ~150 words per minute = 2.5 words/sec
-    // Each word ~0.4 seconds at rate 1.0
-    var wordCount = text.split(/[\s.]+/).filter(function(w) { return w.length > 0; }).length;
+    // Estimate natural speech duration at rate 1.0
+    // ~2.5 words per second at normal rate
+    var wordCount = text.split(/[\s.]+/).filter(function (w) { return w.length > 0; }).length;
     var naturalDuration = wordCount * 0.4;
 
-    // Calculate rate to finish before gates arrive
-    // Leave 0.5s buffer for reaction time
+    // Calculate rate to finish 0.5s before gates arrive
     var targetDuration = Math.max(0.5, arrivalTime - 0.5);
     var rate = naturalDuration / targetDuration;
 
-    // Clamp to valid range: 0.5 to 3.0 (usable range)
-    // The spec allows 0.1-10 but extreme values sound terrible
+    // Clamp to usable range (spec allows 0.1-10 but extremes sound bad)
     rate = Math.max(0.5, Math.min(3.0, rate));
 
     var u = new SpeechSynthesisUtterance(text);
@@ -143,7 +169,7 @@ class AudioEngine {
     window.speechSynthesis.speak(u);
   }
 
-  // --- Background Music (procedural) ---
+  // --- Background Music ---
   startMusic() {
     if (this.musicPlaying) return;
     if (!this.ensureContext()) return;
@@ -163,7 +189,7 @@ class AudioEngine {
                 165, 0, 0, 0, 165, 0, 0, 0];
 
     var self = this;
-    this.musicInterval = setInterval(function() {
+    this.musicInterval = setInterval(function () {
       if (!self.musicPlaying || !self.ctx) return;
       var step = self.currentStep % 16;
 
