@@ -1,9 +1,20 @@
 /**
- * shopdata.js — Shop items, quests, and avatar definitions
+ * shopdata.js — Shop items, quests, avatar definitions, and achievements
  *
- * Phase 3.5: Rebalanced prices for abundant coins.
- * 30+ items across skins, hats, trails, and gear.
- * 6 distinct avatar characters.
+ * All Phases through Final:
+ * - 6 avatars with unique features (cape, antenna, wizard hat)
+ * - 30+ shop items across skins, hats, trails, and gear
+ * - Rebalanced prices for abundant coin economy
+ * - 6 quests with scaled rewards
+ * - 20 achievement badge definitions
+ * - Continue cost constant
+ *
+ * Performance note: InstancedMesh can render 1,000 repeated objects
+ * in a single draw call [2]. For our coin system, we use individual
+ * meshes since coins have different positions and collection states,
+ * but the object pooling pattern is recommended for frequently
+ * created/destroyed objects to avoid allocation overhead and GC
+ * pauses [2].
  */
 
 // ===== AVATARS =====
@@ -154,3 +165,47 @@ export var QUESTS = [
   { id: "q_50coins", title: "Coin Collector", desc: "Collect 100 coins in one run", target: 100, reward: 500 },
   { id: "q_3powerups", title: "Powered Up", desc: "Collect 3 power-ups in one run", target: 3, reward: 700 },
 ];
+
+// ===== ACHIEVEMENTS =====
+// Each achievement has a unique id, display name, description, icon,
+// and a condition string that describes when it should be unlocked.
+// The actual checking logic lives in storage.js checkAchievements().
+export var ACHIEVEMENTS = [
+  // --- First steps ---
+  { id: "ach_first_run", name: "First Steps", desc: "Complete your first run", icon: "🏃", condition: "totalEncounters >= 1" },
+  { id: "ach_perfect_run", name: "Perfect Run", desc: "Complete a run with 100% accuracy", icon: "💯", condition: "perfectRun" },
+
+  // --- Streak milestones ---
+  { id: "ach_streak_10", name: "On Fire", desc: "Get a 10-card streak", icon: "🔥", condition: "bestStreak >= 10" },
+  { id: "ach_streak_25", name: "Unstoppable", desc: "Get a 25-card streak", icon: "⚡", condition: "bestStreak >= 25" },
+  { id: "ach_streak_50", name: "Legendary", desc: "Get a 50-card streak", icon: "👑", condition: "bestStreak >= 50" },
+
+  // --- Score milestones ---
+  { id: "ach_score_1000", name: "Rising Star", desc: "Score 1,000 points in one run", icon: "⭐", condition: "score >= 1000" },
+  { id: "ach_score_5000", name: "High Achiever", desc: "Score 5,000 points in one run", icon: "🌟", condition: "score >= 5000" },
+  { id: "ach_score_10000", name: "Board Certified", desc: "Score 10,000 points in one run", icon: "🏆", condition: "score >= 10000" },
+
+  // --- Coin milestones ---
+  { id: "ach_coins_500", name: "Piggy Bank", desc: "Accumulate 500 total coins", icon: "🪙", condition: "totalCoins >= 500" },
+  { id: "ach_coins_5000", name: "Wealthy Doc", desc: "Accumulate 5,000 total coins", icon: "💰", condition: "totalCoins >= 5000" },
+
+  // --- Encounter milestones ---
+  { id: "ach_encounters_100", name: "Seasoned", desc: "Answer 100 total cards", icon: "📚", condition: "totalEncounters >= 100" },
+  { id: "ach_encounters_500", name: "Veteran", desc: "Answer 500 total cards", icon: "🎖️", condition: "totalEncounters >= 500" },
+  { id: "ach_encounters_1000", name: "Grand Master", desc: "Answer 1,000 total cards", icon: "🏅", condition: "totalEncounters >= 1000" },
+
+  // --- Daily streak milestones ---
+  { id: "ach_daily_3", name: "Consistent", desc: "Complete 3 daily rounds", icon: "📅", condition: "dailyStreak >= 3" },
+  { id: "ach_daily_7", name: "Dedicated", desc: "Complete 7 daily rounds", icon: "🗓️", condition: "dailyStreak >= 7" },
+  { id: "ach_daily_30", name: "Committed", desc: "Complete 30 daily rounds", icon: "💪", condition: "dailyStreak >= 30" },
+
+  // --- Special achievements ---
+  { id: "ach_all_subjects", name: "Renaissance Doc", desc: "Answer cards from all 15 subjects", icon: "🌍", condition: "allSubjectsTouched" },
+  { id: "ach_custom_card", name: "Card Creator", desc: "Create your first custom card", icon: "📝", condition: "customCardCreated" },
+  { id: "ach_speed_max", name: "Speed Demon", desc: "Complete a run at speed 10", icon: "🏎️", condition: "maxSpeedRun" },
+  { id: "ach_buy_first", name: "Shopper", desc: "Buy your first item from the Locker", icon: "🛍️", condition: "firstPurchase" },
+];
+
+// ===== CONTINUE COST =====
+// How many coins it costs to continue after losing all lives
+export var CONTINUE_COST = 50;
