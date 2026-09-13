@@ -1,11 +1,5 @@
 /**
  * main.js — Initialization and wiring
- *
- * Entry point that:
- * 1. Initializes the game engine (Three.js)
- * 2. Initializes the UI
- * 3. Wires callbacks between game ↔ UI
- * 4. Binds mode-select buttons and pause/resume
  */
 
 import { game } from './game.js';
@@ -15,13 +9,10 @@ import { audio } from './audio.js';
 import { CARDS } from './cards.js';
 
 function startMode(mode) {
-  // Validate daily
   if (mode === 'daily' && storage.get('dailyDone')) {
     alert('Daily round already completed today! Come back tomorrow.');
     return;
   }
-
-  // Validate weakness mode has enough weak cards
   if (mode === 'weakness') {
     const subjects = storage.get('selectedSubjects');
     const weakCards = CARDS.filter(c => {
@@ -35,34 +26,26 @@ function startMode(mode) {
     }
   }
 
-  // Initialize game state for this mode
   game.start(mode);
-
-  // Hide all UI screens, show HUD
   ui.hideAll();
   ui.showHud();
-
-  // Countdown then start the run
   ui.countdown(function () {
     game.go();
   });
 }
 
 function init() {
-  // Initialize storage
   storage.load();
   storage.checkDailyReset();
-
-  // Initialize Three.js game engine
   game.init();
-
-  // Initialize UI (renders all screens)
   ui.init();
 
-  // ===== Wire game → UI callbacks =====
+  // Wire game → UI callbacks
 
-  game.onEncounterStart = function (card) {
+  // When encounter starts, show buzzwords AND answer choices in HTML
+  game.onEncounterStart = function (card, gates) {
     ui.showBuzzwords(card);
+    ui.showAnswerChoices(gates);
   };
 
   game.onEncounterResolve = function (card, wasCorrect) {
@@ -74,16 +57,15 @@ function init() {
 
   game.onRunEnd = function () {
     ui.hideHud();
+    ui.hideAnswerChoices();
     ui.showPostRun(game);
 
-    // Bind post-run action buttons
     var againBtn = document.getElementById('playAgainBtn');
     if (againBtn) {
       againBtn.addEventListener('click', function () {
         startMode(game.mode);
       });
     }
-
     var weakBtn = document.getElementById('weaknessBtn');
     if (weakBtn) {
       weakBtn.addEventListener('click', function () {
@@ -96,12 +78,11 @@ function init() {
     ui.updateHud(game);
   };
 
-  // When cosmetics change in shop, rebuild the 3D player model
   ui.onEquipChange = function () {
     game.buildPlayer();
   };
 
-  // ===== Bind mode-select buttons =====
+  // Bind mode-select buttons
   document.querySelectorAll('.mode-card').forEach(function (card) {
     card.addEventListener('click', function () {
       var mode = this.dataset.mode;
@@ -109,22 +90,18 @@ function init() {
     });
   });
 
-  // ===== Bind pause / resume / end run =====
+  // Bind pause/resume
   document.getElementById('pauseBtn').addEventListener('click', function () {
     game.togglePause();
   });
-
   document.getElementById('resumeBtn').addEventListener('click', function () {
     game.resume();
   });
-
   document.getElementById('endRunBtn').addEventListener('click', function () {
     game.endRun();
   });
 
-  // ===== Music auto-start if it was on last session =====
-  // Browsers require user gesture to start AudioContext,
-  // so we start on first click if musicOn was saved
+  // Music auto-start
   if (storage.get('musicOn')) {
     document.addEventListener('click', function startMusicOnce() {
       audio.startMusic();
@@ -133,11 +110,10 @@ function init() {
     }, { once: true });
   }
 
-  // Prevent pull-to-refresh / bounce scrolling during gameplay
+  // Prevent pull-to-refresh
   document.addEventListener('touchmove', function (e) {
     if (game.running) e.preventDefault();
   }, { passive: false });
 }
 
-// ===== Start everything when DOM is ready =====
 window.addEventListener('DOMContentLoaded', init);
