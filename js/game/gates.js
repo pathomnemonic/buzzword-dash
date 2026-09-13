@@ -1,6 +1,6 @@
 /**
  * gates.js — Gate spawning, display, and encounter resolution
- * Now includes custom cards in the selection pool.
+ * Merges built-in cards with user-created custom cards.
  */
 
 import * as THREE from 'three';
@@ -12,8 +12,6 @@ var LANE_X = [-3, 0, 3];
 
 export function pickCard(recentIds, mode) {
   var subjects = storage.get('selectedSubjects');
-
-  // Merge built-in cards with user-created custom cards
   var allCards = CARDS.concat(customCards.getAll());
 
   var pool = allCards.filter(function (c) {
@@ -56,6 +54,7 @@ export function spawnGates(scene, gates, currentLane, theme) {
   var meshes = [];
   for (var j = 0; j < 3; j++) {
     var group = new THREE.Group();
+
     var frame = new THREE.Mesh(
       new THREE.BoxGeometry(2.8, 3, 0.2),
       new THREE.MeshBasicMaterial({
@@ -65,25 +64,34 @@ export function spawnGates(scene, gates, currentLane, theme) {
       })
     );
     group.add(frame);
+
     var glowMat = new THREE.MeshBasicMaterial({
       color: theme.glow || 0x18ffff,
       transparent: true,
       opacity: 0.35
     });
+
     var topBar = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.1, 0.2), glowMat);
     topBar.position.set(0, 1.55, 0);
     group.add(topBar);
+
     var botBar = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.1, 0.2), glowMat);
     botBar.position.set(0, -1.55, 0);
     group.add(botBar);
+
     for (var sx = -1; sx <= 1; sx += 2) {
       var p = new THREE.Mesh(
         new THREE.BoxGeometry(0.12, 3, 0.2),
-        new THREE.MeshBasicMaterial({ color: theme.glow || 0x18ffff, transparent: true, opacity: 0.2 })
+        new THREE.MeshBasicMaterial({
+          color: theme.glow || 0x18ffff,
+          transparent: true,
+          opacity: 0.2
+        })
       );
       p.position.set(sx * 1.45, 0, 0);
       group.add(p);
     }
+
     group.position.set(LANE_X[j], 1.5, -60);
     scene.add(group);
     meshes.push(group);
