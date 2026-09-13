@@ -287,10 +287,161 @@ function buildORDoors() {
   return g;
 }
 
+function buildSpilledSupplies() {
+  var g = new THREE.Group();
+  // Tipped-over box
+  var box1 = new THREE.Mesh(
+    new THREE.BoxGeometry(0.6, 0.5, 0.4),
+    new THREE.MeshStandardMaterial({ color: 0xccbb88 })
+  );
+  box1.position.set(-0.3, 0.25, 0);
+  box1.rotation.z = 0.3;
+  g.add(box1);
+  // Second box upright
+  var box2 = new THREE.Mesh(
+    new THREE.BoxGeometry(0.5, 0.4, 0.35),
+    new THREE.MeshStandardMaterial({ color: 0xddccaa })
+  );
+  box2.position.set(0.4, 0.2, 0.2);
+  g.add(box2);
+  // Red cross on box
+  var cH = new THREE.Mesh(
+    new THREE.BoxGeometry(0.2, 0.05, 0.02),
+    new THREE.MeshBasicMaterial({ color: 0xff0000 })
+  );
+  cH.position.set(0.4, 0.35, 0.03);
+  g.add(cH);
+  var cV = new THREE.Mesh(
+    new THREE.BoxGeometry(0.05, 0.2, 0.02),
+    new THREE.MeshBasicMaterial({ color: 0xff0000 })
+  );
+  cV.position.set(0.4, 0.35, 0.03);
+  g.add(cV);
+  // Scattered pill bottles
+  var bottleMat = new THREE.MeshBasicMaterial({ color: 0xff8833 });
+  for (var i = 0; i < 4; i++) {
+    var bottle = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.06, 0.06, 0.2, 8),
+      bottleMat
+    );
+    bottle.position.set(
+      (Math.random() - 0.5) * 1.5,
+      0.1,
+      (Math.random() - 0.5) * 0.8
+    );
+    bottle.rotation.z = Math.random() * Math.PI;
+    bottle.rotation.x = Math.random() * 0.5;
+    g.add(bottle);
+  }
+  // Scattered syringes
+  var syringeMat = new THREE.MeshBasicMaterial({ color: 0xddddff, transparent: true, opacity: 0.7 });
+  for (var j = 0; j < 3; j++) {
+    var syringe = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.02, 0.02, 0.35, 6),
+      syringeMat
+    );
+    syringe.position.set(
+      (Math.random() - 0.5) * 1.2,
+      0.05,
+      (Math.random() - 0.5) * 0.6
+    );
+    syringe.rotation.z = Math.random() * Math.PI;
+    g.add(syringe);
+  }
+  // Bandage roll
+  var bandage = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.1, 0.1, 0.08, 10),
+    new THREE.MeshBasicMaterial({ color: 0xeeeeee })
+  );
+  bandage.position.set(0.6, 0.08, -0.3);
+  bandage.rotation.x = Math.PI / 2;
+  g.add(bandage);
+  // Warning arrow (orange = jump)
+  var arrow = new THREE.Mesh(
+    new THREE.ConeGeometry(0.15, 0.3, 4),
+    new THREE.MeshBasicMaterial({ color: 0xff8800 })
+  );
+  arrow.position.set(0, 1.2, 0);
+  g.add(arrow);
+  return g;
+}
+
+function buildMRITunnel() {
+  var g = new THREE.Group();
+  // Outer ring (the MRI bore)
+  var ringMat = new THREE.MeshStandardMaterial({ color: 0xddddee });
+  var outerRing = new THREE.Mesh(
+    new THREE.TorusGeometry(1.3, 0.25, 12, 24),
+    ringMat
+  );
+  outerRing.position.set(0, 1.5, 0);
+  outerRing.rotation.y = Math.PI / 2;
+  g.add(outerRing);
+  // Inner bore (darker, the tunnel you slide through)
+  var boreMat = new THREE.MeshBasicMaterial({ color: 0x334455 });
+  var bore = new THREE.Mesh(
+    new THREE.CylinderGeometry(1.0, 1.0, 1.5, 16, 1, true),
+    boreMat
+  );
+  bore.position.set(0, 1.5, 0);
+  bore.rotation.x = Math.PI / 2;
+  g.add(bore);
+  // Front face panel
+  var panel = new THREE.Mesh(
+    new THREE.BoxGeometry(2.8, 2.8, 0.15),
+    new THREE.MeshStandardMaterial({ color: 0xccccdd })
+  );
+  panel.position.set(0, 1.5, 0.7);
+  g.add(panel);
+  // Bore hole in panel (dark circle)
+  var holeVisual = new THREE.Mesh(
+    new THREE.CircleGeometry(1.0, 16),
+    new THREE.MeshBasicMaterial({ color: 0x222233 })
+  );
+  holeVisual.position.set(0, 1.5, 0.78);
+  g.add(holeVisual);
+  // Patient bed/table extending from MRI
+  var bed = new THREE.Mesh(
+    new THREE.BoxGeometry(0.8, 0.1, 2.5),
+    new THREE.MeshBasicMaterial({ color: 0xeeeeff })
+  );
+  bed.position.set(0, 0.55, -0.5);
+  g.add(bed);
+  // Bed legs
+  for (var bx = -0.3; bx <= 0.3; bx += 0.6) {
+    var leg = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.04, 0.04, 0.5, 6),
+      new THREE.MeshBasicMaterial({ color: 0x888899 })
+    );
+    leg.position.set(bx, 0.25, -1.2);
+    g.add(leg);
+  }
+  // Blue glow ring inside bore (medical aesthetic)
+  var glowRing = new THREE.Mesh(
+    new THREE.TorusGeometry(0.9, 0.04, 8, 20),
+    new THREE.MeshBasicMaterial({ color: 0x4488ff, transparent: true, opacity: 0.5 })
+  );
+  glowRing.position.set(0, 1.5, 0.3);
+  glowRing.rotation.y = Math.PI / 2;
+  g.add(glowRing);
+  // Second glow ring
+  var glowRing2 = glowRing.clone();
+  glowRing2.position.set(0, 1.5, -0.3);
+  g.add(glowRing2);
+  // Down arrow indicator (blue = slide)
+  var arrow = new THREE.Mesh(
+    new THREE.ConeGeometry(0.15, 0.3, 4),
+    new THREE.MeshBasicMaterial({ color: 0x4488ff })
+  );
+  arrow.position.set(0, 2.8, 0);
+  arrow.rotation.z = Math.PI;
+  g.add(arrow);
+  return g;
+}
 // ===== OBSTACLE SPAWNER =====
 
-var jumpBuilders = [buildGurney, buildWetFloorSign, buildWheelchair];
-var slideBuilders = [buildIVPole, buildHospitalSign, buildORDoors];
+var jumpBuilders = [buildGurney, buildWetFloorSign, buildWheelchair, buildSpilledSupplies];
+var slideBuilders = [buildIVPole, buildHospitalSign, buildORDoors, buildMRITunnel];
 
 export function spawnObstacle(scene, obstacleMeshes) {
   var lane = Math.floor(Math.random() * 3);
