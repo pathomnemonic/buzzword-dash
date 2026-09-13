@@ -8,7 +8,7 @@
 import { SUBJECTS, CARDS } from './cards.js';
 import { storage } from './storage.js';
 import { audio } from './audio.js';
-import { SHOP_ITEMS, QUESTS } from './game.js';
+import { SHOP_ITEMS, QUESTS } from './game/engine.js';
 
 class UI {
   constructor() {
