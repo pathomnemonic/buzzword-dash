@@ -1,13 +1,10 @@
 /**
- * audio.js — Sound effects + procedural background music
+ * audio.js — Sound effects, procedural music, and TTS
  *
- * Uses Web Audio API OscillatorNode and GainNode for all sound.
- * No audio files needed — everything is synthesized.
- *
- * The Web Audio API generates periodic waveforms (sine, square, 
- * sawtooth, triangle) and chains them with gain nodes for volume
- * control, enabling procedural music generation entirely in 
- * JavaScript without loading external audio files.
+ * TTS rate adjusts based on game speed so the voice
+ * finishes speaking before gates arrive.
+ * SpeechSynthesisUtterance.rate ranges from 0.1 to 10,
+ * where 1 is normal speed.
  */
 
 import { storage } from './storage.js';
@@ -45,14 +42,14 @@ class AudioEngine {
   // --- Sound effects ---
   play(type) {
     if (!this.ensureContext()) return;
-    const vol = this.getVolume();
+    var vol = this.getVolume();
     if (vol <= 0) return;
 
-    const ctx = this.ctx;
-    const t = ctx.currentTime;
-    const g = ctx.createGain();
+    var ctx = this.ctx;
+    var t = ctx.currentTime;
+    var g = ctx.createGain();
     g.connect(ctx.destination);
-    const o = ctx.createOscillator();
+    var o = ctx.createOscillator();
 
     switch (type) {
       case 'correct':
@@ -64,7 +61,6 @@ class AudioEngine {
         g.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
         o.connect(g); o.start(t); o.stop(t + 0.25);
         break;
-
       case 'wrong':
         o.type = 'sawtooth';
         o.frequency.setValueAtTime(200, t);
@@ -73,7 +69,6 @@ class AudioEngine {
         g.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
         o.connect(g); o.start(t); o.stop(t + 0.18);
         break;
-
       case 'coin':
         o.type = 'sine';
         o.frequency.setValueAtTime(988, t);
@@ -82,7 +77,6 @@ class AudioEngine {
         g.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
         o.connect(g); o.start(t); o.stop(t + 0.08);
         break;
-
       case 'rush':
         o.type = 'sine';
         o.frequency.setValueAtTime(600, t);
@@ -91,7 +85,6 @@ class AudioEngine {
         g.gain.exponentialRampToValueAtTime(0.001, t + 0.13);
         o.connect(g); o.start(t); o.stop(t + 0.13);
         break;
-
       case 'countdown':
         o.type = 'sine';
         o.frequency.setValueAtTime(660, t);
@@ -99,7 +92,6 @@ class AudioEngine {
         g.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
         o.connect(g); o.start(t); o.stop(t + 0.1);
         break;
-
       case 'powerup':
         o.type = 'sine';
         o.frequency.setValueAtTime(440, t);
@@ -108,7 +100,6 @@ class AudioEngine {
         g.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
         o.connect(g); o.start(t); o.stop(t + 0.35);
         break;
-
       default:
         o.type = 'sine';
         o.frequency.setValueAtTime(440, t);
@@ -118,74 +109,85 @@ class AudioEngine {
     }
   }
 
-  // --- TTS ---
-  speak(text) {
+  // --- TTS with speed-adaptive rate ---
+  // gameSpeed: current game speed in units/sec
+  // gateDistance: how far away gates spawn (default 60)
+  speak(text, gameSpeed) {
     if (!storage.get('ttsEnabled') || !window.speechSynthesis) return;
-    const u = new SpeechSynthesisUtterance(text);
-    u.rate = storage.get('ttsRate') || 1;
+
+    // Calculate how long gates take to arrive
+    // gateDistance = 60 units, speed = gameSpeed units/sec
+    // arrivalTime = 60 / gameSpeed
+    var arrivalTime = 60 / (gameSpeed || 15);
+
+    // Estimate speech duration at rate 1.0
+    // Average English: ~150 words per minute = 2.5 words/sec
+    // Each word ~0.4 seconds at rate 1.0
+    var wordCount = text.split(/[\s.]+/).filter(function(w) { return w.length > 0; }).length;
+    var naturalDuration = wordCount * 0.4;
+
+    // Calculate rate to finish before gates arrive
+    // Leave 0.5s buffer for reaction time
+    var targetDuration = Math.max(0.5, arrivalTime - 0.5);
+    var rate = naturalDuration / targetDuration;
+
+    // Clamp to valid range: 0.5 to 3.0 (usable range)
+    // The spec allows 0.1-10 but extreme values sound terrible
+    rate = Math.max(0.5, Math.min(3.0, rate));
+
+    var u = new SpeechSynthesisUtterance(text);
+    u.rate = rate;
     u.volume = storage.get('masterVolume') * 0.7;
+
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(u);
   }
 
   // --- Background Music (procedural) ---
-  // Generates a simple looping electronic beat using oscillators.
-  // Pattern: bass on 1/3, hi-hat on every beat, melody on select steps.
   startMusic() {
     if (this.musicPlaying) return;
     if (!this.ensureContext()) return;
     this.musicPlaying = true;
     this.currentStep = 0;
 
-    // Master gain for music
     this.musicGain = this.ctx.createGain();
     this.musicGain.gain.value = storage.get('masterVolume') * 0.12;
     this.musicGain.connect(this.ctx.destination);
 
-    const bpm = 128;
-    const stepTime = (60 / bpm) / 2; // 16th notes
+    var bpm = 128;
+    var stepTime = (60 / bpm) / 2;
 
-    // Melody notes (pentatonic scale in C)
-    const melody = [523, 587, 659, 784, 880, 784, 659, 587,
-                    523, 0, 659, 0, 784, 880, 0, 523];
-    // Bass pattern
-    const bass = [131, 0, 0, 0, 131, 0, 0, 0,
-                  165, 0, 0, 0, 165, 0, 0, 0];
+    var melody = [523, 587, 659, 784, 880, 784, 659, 587,
+                  523, 0, 659, 0, 784, 880, 0, 523];
+    var bass = [131, 0, 0, 0, 131, 0, 0, 0,
+                165, 0, 0, 0, 165, 0, 0, 0];
 
-    this.musicInterval = setInterval(() => {
-      if (!this.musicPlaying || !this.ctx) return;
-      const t = this.ctx.currentTime;
-      const step = this.currentStep % 16;
+    var self = this;
+    this.musicInterval = setInterval(function() {
+      if (!self.musicPlaying || !self.ctx) return;
+      var step = self.currentStep % 16;
 
-      // Hi-hat on every other step
       if (step % 2 === 0) {
-        this.playNote('square', 6000 + Math.random() * 2000, 0.03, 0.03, this.musicGain);
+        self.playNote('square', 6000 + Math.random() * 2000, 0.03, 0.03, self.musicGain);
       }
-
-      // Bass
       if (bass[step] > 0) {
-        this.playNote('sine', bass[step], 0.15, stepTime * 1.5, this.musicGain);
+        self.playNote('sine', bass[step], 0.15, stepTime * 1.5, self.musicGain);
       }
-
-      // Melody
       if (melody[step] > 0) {
-        this.playNote('triangle', melody[step], 0.08, stepTime * 0.8, this.musicGain);
+        self.playNote('triangle', melody[step], 0.08, stepTime * 0.8, self.musicGain);
       }
-
-      // Kick on 1 and 9
       if (step === 0 || step === 8) {
-        this.playKick(this.musicGain);
+        self.playKick(self.musicGain);
       }
-
-      this.currentStep++;
+      self.currentStep++;
     }, stepTime * 1000);
   }
 
   playNote(type, freq, volume, duration, destination) {
     if (!this.ctx) return;
-    const t = this.ctx.currentTime;
-    const o = this.ctx.createOscillator();
-    const g = this.ctx.createGain();
+    var t = this.ctx.currentTime;
+    var o = this.ctx.createOscillator();
+    var g = this.ctx.createGain();
     o.type = type;
     o.frequency.setValueAtTime(freq, t);
     g.gain.setValueAtTime(volume, t);
@@ -198,9 +200,9 @@ class AudioEngine {
 
   playKick(destination) {
     if (!this.ctx) return;
-    const t = this.ctx.currentTime;
-    const o = this.ctx.createOscillator();
-    const g = this.ctx.createGain();
+    var t = this.ctx.currentTime;
+    var o = this.ctx.createOscillator();
+    var g = this.ctx.createGain();
     o.type = 'sine';
     o.frequency.setValueAtTime(150, t);
     o.frequency.exponentialRampToValueAtTime(30, t + 0.1);
@@ -241,4 +243,4 @@ class AudioEngine {
   }
 }
 
-export const audio = new AudioEngine();
+export var audio = new AudioEngine();
