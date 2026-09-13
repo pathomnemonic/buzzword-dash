@@ -12,14 +12,9 @@
  * - TTS speed adapts to game speed
  * - No freeze after correct answers in endless mode
  * - Speed dial 1-10 (1 = 3.75 u/s, 10 = 37.5 u/s)
+ * - Speed lines at high speeds and during rush
+ * - Cape flutter animation for superhero avatar
  * - Answer-leak validation logged to console
- *
- * Performance approach per Three.js best practices:
- * - setAnimationLoop for render loop
- * - MeshBasicMaterial for always-visible objects (coins, power-ups, glow)
- * - MeshStandardMaterial for objects that benefit from lighting
- * - Objects removed from scene when past camera
- * - Delta time clamped to prevent huge jumps after tab switch
  */
 
 import * as THREE from 'three';
@@ -88,6 +83,7 @@ class Game {
     this.obstacleMeshes = [];
     this.coinMeshes = [];
     this.envPropMeshes = [];
+    this.speedLines = [];
 
     this.feedbackTimer = 0;
     this.teachTimer = 0;
@@ -97,6 +93,7 @@ class Game {
     this.coinSpawnTimer = 0;
     this.powerupSpawnTimer = 0;
     this.envPropSpawnTimer = 0;
+    this.speedLineTimer = 0;
     this.waitingForNext = false;
     this.nextEncounterTimer = 0;
 
@@ -232,6 +229,7 @@ class Game {
     this.coinSpawnTimer = 0;
     this.powerupSpawnTimer = 8;
     this.envPropSpawnTimer = 0.5;
+    this.speedLineTimer = 0;
     this.shakeTimer = 0;
     this.runCards = [];
     this.recentIds = [];
@@ -269,6 +267,12 @@ class Game {
     this.coinMeshes = [];
     for (i = 0; i < this.envPropMeshes.length; i++) this.scene.remove(this.envPropMeshes[i]);
     this.envPropMeshes = [];
+    for (i = 0; i < this.speedLines.length; i++) {
+      this.speedLines[i].geometry.dispose();
+      this.speedLines[i].material.dispose();
+      this.scene.remove(this.speedLines[i]);
+    }
+    this.speedLines = [];
   }
 
   collectPowerup(type) {
@@ -474,7 +478,7 @@ class Game {
         this.limbs.leftArm.rotation.x = -sw * 0.8;
         this.limbs.rightArm.rotation.x = sw * 0.8;
       }
-      // Cape flutter (if avatar has one)
+      // Cape flutter animation for superhero avatar
       if (this.limbs.cape) {
         this.limbs.cape.rotation.x = 0.15 + Math.sin(this.legPhase * 1.5) * 0.1;
       }
@@ -543,17 +547,55 @@ class Game {
       this.envPropSpawnTimer = 1.5 + Math.random() * 2;
     }
 
-    // Move env props toward camera and remove when past
+    // Move env props toward camera with parallax (70% speed) and remove when past
     for (var ei = this.envPropMeshes.length - 1; ei >= 0; ei--) {
       var ep = this.envPropMeshes[ei];
-      // Props move at 70% of game speed for parallax depth effect
       ep.position.z += move * 0.7;
-      // Slow rotation for visual interest
       ep.rotation.y += dt * 0.3;
-      // Remove when past camera
       if (ep.position.z > 10) {
         this.scene.remove(ep);
         this.envPropMeshes.splice(ei, 1);
+      }
+    }
+
+    // ===== SPEED LINES (appear at high speeds and during rush) =====
+    var speedRatio = this.speed / this.baseSpeed;
+    if (speedRatio > 1.3 || this.rushing) {
+      this.speedLineTimer -= dt;
+      if (this.speedLineTimer <= 0) {
+        var lineLen = 2 + Math.random() * 4;
+        var lineOpacity = 0.15 + (speedRatio - 1) * 0.1;
+        if (this.rushing) lineOpacity = 0.4;
+        var lineMat = new THREE.MeshBasicMaterial({
+          color: 0xffffff,
+          transparent: true,
+          opacity: Math.min(lineOpacity, 0.5)
+        });
+        var speedLine = new THREE.Mesh(
+          new THREE.BoxGeometry(0.02, 0.02, lineLen),
+          lineMat
+        );
+        speedLine.position.set(
+          (Math.random() - 0.5) * 12,
+          Math.random() * 6,
+          -30 - Math.random() * 20
+        );
+        this.scene.add(speedLine);
+        this.speedLines.push(speedLine);
+        this.speedLineTimer = this.rushing ? 0.02 : (0.1 / Math.max(speedRatio, 1));
+      }
+    }
+
+    // Move and clean speed lines
+    for (var sli = this.speedLines.length - 1; sli >= 0; sli--) {
+      var sl = this.speedLines[sli];
+      sl.position.z += move * 2.5;
+      sl.material.opacity -= dt * 0.5;
+      if (sl.position.z > 10 || sl.material.opacity <= 0) {
+        this.scene.remove(sl);
+        sl.geometry.dispose();
+        sl.material.dispose();
+        this.speedLines.splice(sli, 1);
       }
     }
 
