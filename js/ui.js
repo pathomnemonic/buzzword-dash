@@ -1,26 +1,12 @@
 /**
  * ui.js — All screen rendering, HUD updates, shop, quests,
- * settings, post-run review, tutorial, custom cards, and card flagging.
+ * settings, post-run review, tutorial, custom cards, card flagging,
+ * floating score popups, streak milestones, coin burst particles,
+ * and power-up screen-edge glow.
  *
  * ZERO Three.js code — only touches the DOM.
  *
- * Phase 2+3 features included:
- * - Custom card create/edit/delete with validation
- * - Card import/export as JSON
- * - Card flagging in post-run review
- * - Floating score popup text
- * - Streak milestone display
- * - Power-up collection notification
- * - Subject select all / deselect all / long-press for "only this"
- * - Tutorial rewritten for end users with close button
- * - Hidden scrollbars on desktop
- *
- * The SpeechSynthesisUtterance rate property accepts values from
- * 0.1 (lowest) to 10 (highest), with 1 being the default [4].
- * This is a Baseline Widely Available feature since September 2018 [4] [6].
- *
- * localStorage provides at least 5MB per origin, sufficient for
- * thousands of custom cards stored as JSON strings [7].
+ * All Phase 1 through 3.5 features included.
  */
 
 import { SUBJECTS, CARDS } from './cards.js';
@@ -35,13 +21,13 @@ class UI {
     this.tutorialPages = [
       { icon: '⚡', title: 'Welcome!', text: 'Buzzword Dash is a fast-paced game that helps you master medical board concepts. See diagnostic buzzwords and run through the correct diagnosis gate!' },
       { icon: '👆', title: 'Move Between Lanes', text: 'Swipe left or right to switch lanes. Each lane has a different diagnosis — pick the one that matches the buzzwords at the top.' },
-      { icon: '⬆️', title: 'Jump Over Obstacles', text: 'Swipe up to jump over gurneys and other obstacles on the ground.' },
-      { icon: '⬇️', title: 'Slide Under Obstacles', text: 'Swipe down to slide under IV poles and overhead barriers.' },
+      { icon: '⬆️', title: 'Jump Over Obstacles', text: 'Swipe up to jump over gurneys, wheelchairs, and other obstacles on the ground.' },
+      { icon: '⬇️', title: 'Slide Under Obstacles', text: 'Swipe down to slide under IV poles, hospital signs, and MRI tunnels.' },
       { icon: '👆👆', title: 'Rush for Bonus Points', text: 'Know the answer? Double-tap the screen (or press Shift on keyboard) to rush through the gate and earn bonus points!' },
       { icon: '🏎️', title: 'Speed = Points', text: 'Use the speed dial on the home screen to increase game speed. Faster speeds earn more points per correct answer.' },
       { icon: '🔥', title: 'Build Your Streak', text: 'Correct answers build your streak. Every 5 correct increases your score multiplier up to 8×!' },
       { icon: '❤️', title: 'Lives', text: 'You start with 3 lives. Wrong answers and hitting obstacles cost a life. Study Mode has unlimited lives.' },
-      { icon: '🪙', title: 'Collect Coins & Power-ups', text: 'Grab coins as you run! Collect glowing orbs for power-ups: Shield, Slow-Mo, 2× Score, and Coin Magnet. Spend coins in the On-Call Locker.' },
+      { icon: '🪙', title: 'Collect & Customize', text: 'Grab coins as you run! Collect glowing orbs for power-ups: Shield, Slow-Mo, 2× Score, and Coin Magnet. Spend coins in the On-Call Locker on avatars, hats, trails, and gear!' },
     ];
   }
 
@@ -251,11 +237,18 @@ class UI {
           else if (owned) btnHTML = '<button class="btn btn-outline btn-sm" data-equip="' + item.id + '" data-slot="' + type + '">Equip</button>';
           else btnHTML = '<button class="btn btn-gold btn-sm" data-buy="' + item.id + '" data-price="' + item.price + '">🪙 ' + item.price + '</button>';
           var colorHex = item.color ? '#' + item.color.toString(16).padStart(6, '0') : '#333';
-          return '<div class="shop-item ' + (isEquipped ? 'equipped' : '') + '"><div style="width:36px;height:36px;border-radius:8px;background:' + colorHex + ';flex-shrink:0"></div><div style="flex:1"><div style="font-size:13px;font-weight:700">' + item.name + '</div></div>' + btnHTML + '</div>';
+          var iconText = item.icon || '';
+          return '<div class="shop-item ' + (isEquipped ? 'equipped' : '') + '">' +
+            '<div style="width:36px;height:36px;border-radius:8px;background:' + colorHex + ';flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:16px">' + iconText + '</div>' +
+            '<div style="flex:1"><div style="font-size:13px;font-weight:700">' + item.name + '</div></div>' +
+            btnHTML + '</div>';
         }).join('');
     };
     document.getElementById('shopItems').innerHTML =
-            renderGroup('skin', '👕 Avatars') + renderGroup('hat', '🧢 Headwear') + renderGroup('trail', '✨ Trails') + renderGroup('gear', '🩺 Gear');
+      renderGroup('skin', '👕 Avatars') +
+      renderGroup('hat', '🧢 Headwear') +
+      renderGroup('trail', '✨ Trails') +
+      renderGroup('gear', '🩺 Gear');
 
     document.querySelectorAll('[data-buy]').forEach(function (btn) {
       btn.addEventListener('click', function () {
@@ -444,8 +437,8 @@ class UI {
 
   renderTutorialPage() {
     var p = this.tutorialPages[this.tutorialPage];
-    document.getElementById('tutPage').innerHTML = '<div class="tut-icon">' + p.icon + '</div><h2>' + p.title + '</h2><p>' + p.text + '</p>';
     var self = this;
+    document.getElementById('tutPage').innerHTML = '<div class="tut-icon">' + p.icon + '</div><h2>' + p.title + '</h2><p>' + p.text + '</p>';
     document.getElementById('tutDots').innerHTML = this.tutorialPages.map(function (_, i) {
       return '<div class="tut-dot ' + (i === self.tutorialPage ? 'active' : '') + '"></div>';
     }).join('');
@@ -536,6 +529,27 @@ class UI {
     setTimeout(function () { popup.remove(); }, 800);
   }
 
+  // ===== COIN COLLECTION BURST =====
+  showCoinBurst() {
+    for (var i = 0; i < 6; i++) {
+      var particle = document.createElement('div');
+      var angle = (i / 6) * Math.PI * 2;
+      var dist = 30 + Math.random() * 20;
+      particle.textContent = '✦';
+      particle.style.cssText = 'position:fixed;top:50%;left:50%;font-size:14px;color:var(--accent-gold);pointer-events:none;z-index:6;transition:all 0.4s ease-out;opacity:1;transform:translate(-50%,-50%);';
+      document.body.appendChild(particle);
+      var dx = Math.cos(angle) * dist;
+      var dy = Math.sin(angle) * dist;
+      (function (el, ddx, ddy) {
+        requestAnimationFrame(function () {
+          el.style.transform = 'translate(calc(-50% + ' + ddx + 'px), calc(-50% + ' + ddy + 'px))';
+          el.style.opacity = '0';
+        });
+        setTimeout(function () { el.remove(); }, 400);
+      })(particle, dx, dy);
+    }
+  }
+
   // ===== STREAK MILESTONE =====
   showStreakMilestone(streak, multiplier) {
     var popup = document.createElement('div');
@@ -561,6 +575,24 @@ class UI {
       popup.style.opacity = '0';
     });
     setTimeout(function () { popup.remove(); }, 800);
+  }
+
+  // ===== POWER-UP SCREEN EDGE GLOW =====
+  showPowerupGlow(type) {
+    var colors = {
+      shield: 'rgba(68, 136, 255, 0.3)',
+      slow: 'rgba(68, 255, 170, 0.3)',
+      double: 'rgba(255, 68, 255, 0.3)',
+      magnet: 'rgba(255, 170, 0, 0.3)'
+    };
+    var color = colors[type] || 'rgba(255, 255, 255, 0.2)';
+    var glow = document.createElement('div');
+    glow.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:4;transition:opacity 0.8s ease-out;opacity:1;box-shadow:inset 0 0 60px 20px ' + color + ';';
+    document.body.appendChild(glow);
+    requestAnimationFrame(function () {
+      glow.style.opacity = '0';
+    });
+    setTimeout(function () { glow.remove(); }, 800);
   }
 
   // ===== COUNTDOWN =====
@@ -591,7 +623,14 @@ class UI {
     var missedHTML = missed.map(function (r) {
       var c = r.card;
       var whyWrong = (c.ww && c.ww[r.choice]) || '';
-      return '<div class="review-card"><h4>❌ ' + c.bw.join(' • ') + '</h4><div><span class="tag tag-wrong">You: ' + r.choice + '</span><span class="tag tag-correct">✓ ' + c.ans + '</span><span class="tag tag-subject">' + c.subj + '</span></div><p style="margin-top:5px"><strong>Teaching:</strong> ' + c.tp + '</p>' + (whyWrong ? '<p><strong>Why "' + r.choice + '" is wrong:</strong> ' + whyWrong + '</p>' : '') + '<button class="btn btn-outline btn-sm" style="margin-top:6px" onclick="UI_flagCard(\'' + c.id + '\')">🚩 Flag Card</button></div>';
+      return '<div class="review-card"><h4>❌ ' + c.bw.join(' • ') + '</h4>' +
+        '<div><span class="tag tag-wrong">You: ' + r.choice + '</span>' +
+        '<span class="tag tag-correct">✓ ' + c.ans + '</span>' +
+        '<span class="tag tag-subject">' + c.subj + '</span></div>' +
+        '<p style="margin-top:5px"><strong>Teaching:</strong> ' + c.tp + '</p>' +
+        (whyWrong ? '<p><strong>Why "' + r.choice + '" is wrong:</strong> ' + whyWrong + '</p>' : '') +
+        '<button class="btn btn-outline btn-sm" style="margin-top:6px" onclick="UI_flagCard(\'' + c.id + '\')">🚩 Flag Card</button>' +
+        '</div>';
     }).join('');
 
     var priorities = missed.slice(0, 5).map(function (r, i) {
