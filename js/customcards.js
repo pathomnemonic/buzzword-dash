@@ -5,18 +5,16 @@
  * Custom cards use the same schema as built-in cards so they
  * seamlessly enter the card selection pool during gameplay.
  *
- * Design follows the established pattern of storing user-created
- * content in localStorage for zero-server-infrastructure operation.
+ * localStorage allows up to 5 MiB per origin, which is sufficient
+ * for thousands of custom cards.
  */
 
 import { SUBJECTS } from './cards.js';
-import { storage } from './storage.js';
 
 var CUSTOM_CARDS_KEY = 'buzzword_dash_custom_cards';
 
 export var customCards = {
 
-  // Get all custom cards
   getAll: function () {
     try {
       var raw = localStorage.getItem(CUSTOM_CARDS_KEY);
@@ -26,7 +24,6 @@ export var customCards = {
     }
   },
 
-  // Save all custom cards
   saveAll: function (cards) {
     try {
       localStorage.setItem(CUSTOM_CARDS_KEY, JSON.stringify(cards));
@@ -35,7 +32,6 @@ export var customCards = {
     }
   },
 
-  // Add a new custom card
   add: function (cardData) {
     var cards = this.getAll();
     var card = {
@@ -49,17 +45,13 @@ export var customCards = {
       isCustom: true,
       createdAt: Date.now()
     };
-
-    // Build why-wrong if provided
     if (cardData.whyWrong1) card.ww[cardData.distractors[0]] = cardData.whyWrong1;
     if (cardData.whyWrong2) card.ww[cardData.distractors[1]] = cardData.whyWrong2;
-
     cards.push(card);
     this.saveAll(cards);
     return card;
   },
 
-  // Update an existing custom card
   update: function (cardId, cardData) {
     var cards = this.getAll();
     for (var i = 0; i < cards.length; i++) {
@@ -79,19 +71,15 @@ export var customCards = {
     this.saveAll(cards);
   },
 
-  // Delete a custom card
   remove: function (cardId) {
     var cards = this.getAll();
-    var filtered = cards.filter(function (c) { return c.id !== cardId; });
-    this.saveAll(filtered);
+    this.saveAll(cards.filter(function (c) { return c.id !== cardId; }));
   },
 
-  // Get count
   count: function () {
     return this.getAll().length;
   },
 
-  // Validate a card before saving
   validate: function (cardData) {
     var errors = [];
     if (!cardData.subject || SUBJECTS.indexOf(cardData.subject) < 0) {
@@ -105,13 +93,12 @@ export var customCards = {
     }
     if (!cardData.distractors || cardData.distractors.length < 2 ||
         cardData.distractors[0].trim() === '' || cardData.distractors[1].trim() === '') {
-      errors.push('Two distractors (wrong answers) are required.');
+      errors.push('Two wrong answers are required.');
     }
     if (!cardData.teachingPoint || cardData.teachingPoint.trim() === '') {
       errors.push('A teaching point is required.');
     }
-
-    // Check for answer leaking in buzzwords
+    // Answer-leak check
     if (cardData.answer && cardData.buzzwords) {
       var ansWords = cardData.answer.toLowerCase().split(/[\s\-\/\(\)]+/).filter(function (w) {
         return w.length > 4;
@@ -120,35 +107,29 @@ export var customCards = {
         var bwLower = cardData.buzzwords[b].toLowerCase();
         for (var w = 0; w < ansWords.length; w++) {
           if (bwLower.indexOf(ansWords[w]) >= 0) {
-            errors.push('Warning: Buzzword "' + cardData.buzzwords[b] + '" contains the answer word "' + ansWords[w] + '". Consider rephrasing.');
+            errors.push('Warning: Buzzword "' + cardData.buzzwords[b] + '" may reveal the answer word "' + ansWords[w] + '".');
             break;
           }
         }
       }
     }
-
     return errors;
   },
 
-  // Export all custom cards as JSON string (for sharing/backup)
   exportJSON: function () {
     return JSON.stringify(this.getAll(), null, 2);
   },
 
-  // Import cards from JSON string
   importJSON: function (jsonString) {
     try {
       var imported = JSON.parse(jsonString);
-      if (!Array.isArray(imported)) return { success: false, message: 'Invalid format — expected an array.' };
+      if (!Array.isArray(imported)) return { success: false, message: 'Invalid format.' };
       var existing = this.getAll();
       var count = 0;
       for (var i = 0; i < imported.length; i++) {
-        var card = imported[i];
-        // Assign new ID to avoid conflicts
-        card.id = 'custom_' + Date.now() + '_' + i;
-        card.isCustom = true;
-        card.importedAt = Date.now();
-        existing.push(card);
+        imported[i].id = 'custom_' + Date.now() + '_' + i;
+        imported[i].isCustom = true;
+        existing.push(imported[i]);
         count++;
       }
       this.saveAll(existing);
