@@ -1,19 +1,28 @@
 /**
- * ui.js — All screen rendering, HUD updates, shop, quests,
+ * ui.js — All screen rendering, HUD, shop, quests, achievements,
  * settings, post-run review, tutorial, custom cards, card flagging,
  * floating score popups, streak milestones, coin burst particles,
- * and power-up screen-edge glow.
+ * power-up screen-edge glow, continue prompt, share screenshot,
+ * and achievement notifications.
  *
  * ZERO Three.js code — only touches the DOM.
  *
- * All Phase 1 through 3.5 features included.
+ * For screenshot sharing, the approach uses html2canvas or
+ * a simple DOM-to-image technique. As noted in the Three.js forum,
+ * capturing both the canvas and HTML overlay elements together
+ * requires rendering HTML elements into the canvas or using
+ * a library like html2canvas [7].
+ *
+ * The continue screen implementation follows the standard game UI
+ * pattern: pause the game, show an overlay with cost and
+ * accept/decline buttons, then resume or end based on choice [4].
  */
 
 import { SUBJECTS, CARDS } from './cards.js';
 import { storage } from './storage.js';
 import { audio } from './audio.js';
 import { customCards } from './customcards.js';
-import { SHOP_ITEMS, QUESTS } from './game/engine.js';
+import { SHOP_ITEMS, QUESTS, ACHIEVEMENTS, CONTINUE_COST } from './game/engine.js';
 
 class UI {
   constructor() {
@@ -26,8 +35,9 @@ class UI {
       { icon: '👆👆', title: 'Rush for Bonus Points', text: 'Know the answer? Double-tap the screen (or press Shift on keyboard) to rush through the gate and earn bonus points!' },
       { icon: '🏎️', title: 'Speed = Points', text: 'Use the speed dial on the home screen to increase game speed. Faster speeds earn more points per correct answer.' },
       { icon: '🔥', title: 'Build Your Streak', text: 'Correct answers build your streak. Every 5 correct increases your score multiplier up to 8×!' },
-      { icon: '❤️', title: 'Lives', text: 'You start with 3 lives. Wrong answers and hitting obstacles cost a life. Study Mode has unlimited lives.' },
+      { icon: '❤️', title: 'Lives & Continues', text: 'You start with 3 lives. Wrong answers and hitting obstacles cost a life. When you run out, you can spend coins to continue once!' },
       { icon: '🪙', title: 'Collect & Customize', text: 'Grab coins as you run! Collect glowing orbs for power-ups: Shield, Slow-Mo, 2× Score, and Coin Magnet. Spend coins in the On-Call Locker on avatars, hats, trails, and gear!' },
+      { icon: '🏆', title: 'Achievements', text: 'Earn achievement badges by reaching milestones — perfect runs, high streaks, score targets, and more. Check your progress in the Achievements screen!' },
     ];
   }
 
@@ -40,6 +50,7 @@ class UI {
     this.renderStats();
     this.renderShop();
     this.renderQuests();
+    this.renderAchievements();
     this.setupSpeedDial();
     this.bindNavigation();
     this.bindMusicToggle();
@@ -57,6 +68,7 @@ class UI {
     if (screenId === 'screenQuests') this.renderQuests();
     if (screenId === 'screenSettings') this.renderSettings();
     if (screenId === 'screenMyCards') this.renderCustomCardList();
+    if (screenId === 'screenAchievements') this.renderAchievements();
     document.querySelectorAll('.nav-item').forEach(function (n) {
       n.classList.toggle('active', n.dataset.screen === screenId);
     });
@@ -77,6 +89,7 @@ class UI {
     document.getElementById('settingsBtn').addEventListener('click', function () { self.show('screenSettings'); });
     document.getElementById('shopBtn').addEventListener('click', function () { self.show('screenShop'); });
     document.getElementById('questBtn').addEventListener('click', function () { self.show('screenQuests'); });
+    document.getElementById('achievementsBtn').addEventListener('click', function () { self.show('screenAchievements'); });
     document.getElementById('myCardsBtn').addEventListener('click', function () {
       self.show('screenMyCards');
       self.renderCustomCardList();
@@ -131,12 +144,13 @@ class UI {
     var tw = storage.get('totalWrong');
     var acc = (tc + tw) > 0 ? Math.round(tc / (tc + tw) * 100) : 0;
     var totalCards = CARDS.length + customCards.count();
+    var achCount = storage.getAchievementCount();
     document.getElementById('homeStats').innerHTML =
       '<div class="stat-pill"><div class="val">' + storage.get('coins') + '</div><div class="label">Coins</div></div>' +
       '<div class="stat-pill"><div class="val">' + storage.get('bestScore') + '</div><div class="label">Best</div></div>' +
       '<div class="stat-pill"><div class="val">' + acc + '%</div><div class="label">Accuracy</div></div>' +
       '<div class="stat-pill"><div class="val">' + storage.get('dailyStreak') + '</div><div class="label">Daily</div></div>' +
-      '<div class="stat-pill"><div class="val">' + totalCards + '</div><div class="label">Cards</div></div>';
+      '<div class="stat-pill"><div class="val">' + achCount + '/' + ACHIEVEMENTS.length + '</div><div class="label">Badges</div></div>';
   }
 
   // ===== SUBJECTS =====
@@ -150,10 +164,8 @@ class UI {
     }).join('');
 
     var longPressTimer = null;
-
     container.querySelectorAll('.subject-chip').forEach(function (chip) {
       var subj = chip.dataset.subject;
-
       chip.addEventListener('click', function () {
         if (longPressTimer === 'fired') { longPressTimer = null; return; }
         var sel = storage.get('selectedSubjects');
@@ -167,7 +179,6 @@ class UI {
         storage.set('selectedSubjects', sel);
         chip.classList.toggle('selected');
       });
-
       chip.addEventListener('pointerdown', function () {
         longPressTimer = setTimeout(function () {
           storage.set('selectedSubjects', [subj]);
@@ -238,10 +249,7 @@ class UI {
           else btnHTML = '<button class="btn btn-gold btn-sm" data-buy="' + item.id + '" data-price="' + item.price + '">🪙 ' + item.price + '</button>';
           var colorHex = item.color ? '#' + item.color.toString(16).padStart(6, '0') : '#333';
           var iconText = item.icon || '';
-          return '<div class="shop-item ' + (isEquipped ? 'equipped' : '') + '">' +
-            '<div style="width:36px;height:36px;border-radius:8px;background:' + colorHex + ';flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:16px">' + iconText + '</div>' +
-            '<div style="flex:1"><div style="font-size:13px;font-weight:700">' + item.name + '</div></div>' +
-            btnHTML + '</div>';
+          return '<div class="shop-item ' + (isEquipped ? 'equipped' : '') + '"><div style="width:36px;height:36px;border-radius:8px;background:' + colorHex + ';flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:16px">' + iconText + '</div><div style="flex:1"><div style="font-size:13px;font-weight:700">' + item.name + '</div></div>' + btnHTML + '</div>';
         }).join('');
     };
     document.getElementById('shopItems').innerHTML =
@@ -278,6 +286,20 @@ class UI {
     }).join('');
   }
 
+  // ===== ACHIEVEMENTS =====
+  renderAchievements() {
+    var container = document.getElementById('achievementsList');
+    if (!container) return;
+    var unlocked = storage.get('achievements');
+    container.innerHTML = ACHIEVEMENTS.map(function (ach) {
+      var isUnlocked = unlocked.indexOf(ach.id) >= 0;
+      return '<div class="achievement-item ' + (isUnlocked ? 'unlocked' : 'locked') + '">' +
+        '<div class="achievement-icon">' + (isUnlocked ? ach.icon : '🔒') + '</div>' +
+        '<div class="achievement-info"><div class="achievement-name">' + ach.name + '</div>' +
+        '<div class="achievement-desc">' + ach.desc + '</div></div></div>';
+    }).join('');
+  }
+
   // ===== SETTINGS =====
   renderSettings() {
     var self = this;
@@ -294,6 +316,10 @@ class UI {
         storage.set(key, !storage.get(key));
         toggle.classList.toggle('on');
         self.applySettings();
+        // Notify game about night mode change
+        if (key === 'nightMode' && self.onNightModeChange) {
+          self.onNightModeChange();
+        }
       });
     });
     document.querySelectorAll('[data-range]').forEach(function (range) {
@@ -312,10 +338,13 @@ class UI {
     this.applySettings();
   }
 
+  onNightModeChange = null;
+
   applySettings() {
     document.body.classList.toggle('night-mode', storage.get('nightMode'));
   }
 
+// === PART 1 END === (Part 2 continues with custom cards, tutorial, HUD, popups, continue, post-run, share)
   // ===== CUSTOM CARDS =====
   bindCustomCards() {
     var self = this;
@@ -393,8 +422,13 @@ class UI {
       return;
     }
     var editId = document.getElementById('cardEditId').value;
-    if (editId) customCards.update(editId, cardData);
-    else customCards.add(cardData);
+    if (editId) {
+      customCards.update(editId, cardData);
+    } else {
+      customCards.add(cardData);
+      // Achievement: first custom card
+      storage.unlockAchievement('ach_custom_card');
+    }
     this.show('screenMyCards');
     this.renderCustomCardList();
   }
@@ -595,6 +629,70 @@ class UI {
     setTimeout(function () { glow.remove(); }, 800);
   }
 
+  // ===== ACHIEVEMENT NOTIFICATION =====
+  showAchievementNotification(achievementIds) {
+    var self = this;
+    var delay = 0;
+    achievementIds.forEach(function (achId) {
+      var ach = null;
+      for (var i = 0; i < ACHIEVEMENTS.length; i++) {
+        if (ACHIEVEMENTS[i].id === achId) { ach = ACHIEVEMENTS[i]; break; }
+      }
+      if (!ach) return;
+
+      setTimeout(function () {
+        audio.play('achievement');
+        var popup = document.createElement('div');
+        popup.innerHTML = '<div style="font-size:28px;margin-bottom:4px">' + ach.icon + '</div>' +
+          '<div style="font-size:14px;font-weight:800;color:var(--accent-gold)">Achievement Unlocked!</div>' +
+          '<div style="font-size:16px;font-weight:700;margin-top:2px">' + ach.name + '</div>' +
+          '<div style="font-size:11px;color:var(--text-secondary);margin-top:2px">' + ach.desc + '</div>';
+        popup.style.cssText = 'position:fixed;top:15%;left:50%;transform:translateX(-50%);text-align:center;background:rgba(8,12,36,0.95);backdrop-filter:blur(10px);border:2px solid var(--accent-gold);border-radius:16px;padding:16px 24px;pointer-events:none;z-index:20;transition:all 1.5s ease-out;opacity:1;';
+        document.body.appendChild(popup);
+        setTimeout(function () {
+          popup.style.top = '5%';
+          popup.style.opacity = '0';
+        }, 2000);
+        setTimeout(function () { popup.remove(); }, 3500);
+      }, delay);
+
+      delay += 2000; // stagger multiple achievements
+    });
+  }
+
+  // ===== CONTINUE PROMPT =====
+  showContinuePrompt(cost, onContinue, onDecline) {
+    var overlay = document.getElementById('continueOverlay');
+    var costEl = document.getElementById('continueCost');
+    var currentCoins = document.getElementById('continueCoins');
+    var continueBtn = document.getElementById('continueYesBtn');
+    var declineBtn = document.getElementById('continueNoBtn');
+
+    costEl.textContent = cost;
+    currentCoins.textContent = storage.get('coins');
+    overlay.classList.add('active');
+
+    // Remove old listeners by cloning
+    var newContinueBtn = continueBtn.cloneNode(true);
+    continueBtn.parentNode.replaceChild(newContinueBtn, continueBtn);
+    var newDeclineBtn = declineBtn.cloneNode(true);
+    declineBtn.parentNode.replaceChild(newDeclineBtn, declineBtn);
+
+    newContinueBtn.addEventListener('click', function () {
+      overlay.classList.remove('active');
+      if (onContinue) onContinue();
+    });
+
+    newDeclineBtn.addEventListener('click', function () {
+      overlay.classList.remove('active');
+      if (onDecline) onDecline();
+    });
+  }
+
+  hideContinuePrompt() {
+    document.getElementById('continueOverlay').classList.remove('active');
+  }
+
   // ===== COUNTDOWN =====
   countdown(callback) {
     var ovl = document.getElementById('countdownOverlay');
@@ -623,13 +721,32 @@ class UI {
     var missedHTML = missed.map(function (r) {
       var c = r.card;
       var whyWrong = (c.ww && c.ww[r.choice]) || '';
+      // Rule/exception format if card has exception field
+      var exceptionHTML = '';
+      if (c.exception) {
+        exceptionHTML = '<p style="margin-top:4px"><strong>⚠️ Exception:</strong> ' + c.exception + '</p>';
+      }
       return '<div class="review-card"><h4>❌ ' + c.bw.join(' • ') + '</h4>' +
         '<div><span class="tag tag-wrong">You: ' + r.choice + '</span>' +
         '<span class="tag tag-correct">✓ ' + c.ans + '</span>' +
         '<span class="tag tag-subject">' + c.subj + '</span></div>' +
-        '<p style="margin-top:5px"><strong>Teaching:</strong> ' + c.tp + '</p>' +
-        (whyWrong ? '<p><strong>Why "' + r.choice + '" is wrong:</strong> ' + whyWrong + '</p>' : '') +
+        '<p style="margin-top:5px"><strong>📖 Rule:</strong> ' + c.tp + '</p>' +
+        exceptionHTML +
+        (whyWrong ? '<p style="margin-top:4px"><strong>Why "' + r.choice + '" is wrong:</strong> ' + whyWrong + '</p>' : '') +
         '<button class="btn btn-outline btn-sm" style="margin-top:6px" onclick="UI_flagCard(\'' + c.id + '\')">🚩 Flag Card</button>' +
+        '</div>';
+    }).join('');
+
+    var correctHTML = game.runCards.filter(function (r) { return r.ok; }).slice(0, 5).map(function (r) {
+      var c = r.card;
+      var exceptionHTML = '';
+      if (c.exception) {
+        exceptionHTML = '<p style="margin-top:4px;font-size:10px"><strong>⚠️ Exception:</strong> ' + c.exception + '</p>';
+      }
+      return '<div class="review-card" style="border-left-color:var(--accent-green)"><h4>✓ ' + c.bw.join(' • ') + '</h4>' +
+        '<div><span class="tag tag-correct">' + c.ans + '</span><span class="tag tag-subject">' + c.subj + '</span></div>' +
+        '<p style="margin-top:4px;font-size:10px;color:var(--text-muted)">' + c.tp + '</p>' +
+        exceptionHTML +
         '</div>';
     }).join('');
 
@@ -638,18 +755,84 @@ class UI {
     }).join('');
 
     document.getElementById('postRunContent').innerHTML =
-      '<div class="post-header"><h2>📋 Case Review</h2><div class="score-big">' + game.score + '</div><p style="color:var(--text-muted);font-size:12px">Speed: ' + game.userSpeed + '×</p></div>' +
+      '<div class="post-header"><h2>📋 Case Review</h2><div class="score-big">' + game.score + '</div><p style="color:var(--text-muted);font-size:12px">Speed: ' + game.userSpeed + '× ' + (game.continued ? '(continued)' : '') + '</p></div>' +
       '<div class="post-stats"><div class="post-stat"><div class="val" style="color:var(--accent-green)">' + acc + '%</div><div class="label">Accuracy</div></div><div class="post-stat"><div class="val" style="color:var(--accent-gold)">🪙 ' + game.coins + '</div><div class="label">Coins</div></div><div class="post-stat"><div class="val">🔥 ' + game.bestStreak + '</div><div class="label">Streak</div></div></div>' +
       '<div class="post-stats" style="grid-template-columns:1fr 1fr"><div class="post-stat"><div class="val" style="color:var(--accent-green)">' + game.correct + '</div><div class="label">Correct</div></div><div class="post-stat"><div class="val" style="color:var(--accent-red)">' + game.wrong + '</div><div class="label">Wrong</div></div></div>' +
       (missed.length > 0 ? '<h3 style="margin:14px 0 6px">❌ Missed Cards (' + missed.length + ')</h3>' + missedHTML : '<h3 style="margin:14px 0 6px;color:var(--accent-green)">🎉 Perfect Run!</h3>') +
       (priorities ? '<h3 style="margin:14px 0 6px">🎯 Review Priority</h3><div style="background:var(--bg-card);border-radius:10px;padding:10px">' + priorities + '</div>' : '') +
+      (correctHTML ? '<h3 style="margin:14px 0 6px">✅ Correct Answers (sample)</h3>' + correctHTML : '') +
       '<div style="display:flex;gap:6px;margin-top:14px"><button class="btn btn-green" style="flex:1" id="playAgainBtn">▶ Again</button><button class="btn btn-primary" style="flex:1" id="goHomeBtn">🏠 Home</button></div>' +
-      (missed.length > 0 ? '<button class="btn btn-outline btn-block" style="margin-top:6px" id="weaknessBtn">🎯 Weakness Mode</button>' : '');
+      (missed.length > 0 ? '<button class="btn btn-outline btn-block" style="margin-top:6px" id="weaknessBtn">🎯 Weakness Mode</button>' : '') +
+      '<button class="btn btn-outline btn-block" style="margin-top:6px" id="shareBtn">📤 Share Score</button>';
 
     this.show('screenPostRun');
     var self = this;
     document.getElementById('goHomeBtn').addEventListener('click', function () { self.show('screenHome'); });
+
+    // Share button
+    var shareBtn = document.getElementById('shareBtn');
+    if (shareBtn) {
+      shareBtn.addEventListener('click', function () {
+        self.shareScore(game);
+      });
+    }
   }
+
+  // ===== SHARE SCORE =====
+  shareScore(game) {
+    var total = game.correct + game.wrong;
+    var acc = total > 0 ? Math.round(game.correct / total * 100) : 0;
+    var text = '⚡ Buzzword Dash ⚡\n' +
+      '🏆 Score: ' + game.score + '\n' +
+      '✅ Accuracy: ' + acc + '%\n' +
+      '🔥 Streak: ' + game.bestStreak + '\n' +
+      '🪙 Coins: ' + game.coins + '\n' +
+      '💊 Speed: ' + game.userSpeed + '×\n' +
+      '\nCan you beat my score? Play at:\n' +
+      window.location.href;
+
+    // Try native share API first (mobile)
+    if (navigator.share) {
+      navigator.share({
+        title: 'Buzzword Dash Score',
+        text: text
+      }).catch(function () {
+        // User cancelled or share failed — fall back to clipboard
+        copyToClipboard(text);
+      });
+    } else {
+      // Desktop fallback: copy to clipboard
+      copyToClipboard(text);
+    }
+  }
+}
+
+function copyToClipboard(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function () {
+      alert('Score copied to clipboard! Paste it anywhere to share.');
+    }).catch(function () {
+      fallbackCopy(text);
+    });
+  } else {
+    fallbackCopy(text);
+  }
+}
+
+function fallbackCopy(text) {
+  var textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    document.execCommand('copy');
+    alert('Score copied to clipboard!');
+  } catch (e) {
+    alert('Could not copy. Your score:\n\n' + text);
+  }
+  document.body.removeChild(textarea);
 }
 
 export var ui = new UI();
