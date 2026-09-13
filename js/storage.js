@@ -1,16 +1,19 @@
 /**
  * storage.js — LocalStorage persistence layer
  *
- * Updated defaults for Phase 3.5:
- * - equipped.trail slot added
- * - equipped.skin defaults to avatar_intern
- * - ownedItems includes avatar_intern and trail_none
+ * All Phases through Final:
+ * - equipped.trail slot
+ * - Achievement tracking (unlocked achievements array)
+ * - totalCoins (lifetime coins earned, separate from spendable coins)
+ * - Card lastSeen timestamp for spaced repetition
+ * - Deep merge on load to handle new fields added in updates
  */
 
 var STORAGE_KEY = 'buzzword_dash_v1';
 
 var DEFAULTS = {
   coins: 100,
+  totalCoins: 100,
   bestScore: 0,
   bestStreak: 0,
   totalCorrect: 0,
@@ -41,8 +44,14 @@ var DEFAULTS = {
     gear: "gear_none"
   },
   questProgress: {},
-  flags: []
+  flags: [],
+  achievements: [],
+  continuesUsed: 0
 };
+
+function deepClone(obj) {
+  return JSON.parse(JSON.stringify(obj));
+}
 
 class Storage {
   constructor() {
@@ -54,41 +63,41 @@ class Storage {
       var raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
         var parsed = JSON.parse(raw);
-        // Merge with defaults to add any new fields
         this.data = {};
+        // Merge with defaults so new fields are always present
         for (var key in DEFAULTS) {
           if (parsed[key] !== undefined) {
             this.data[key] = parsed[key];
           } else {
-            this.data[key] = DEFAULTS[key];
+            this.data[key] = typeof DEFAULTS[key] === 'object' && DEFAULTS[key] !== null
+              ? deepClone(DEFAULTS[key])
+              : DEFAULTS[key];
           }
         }
-        // Ensure equipped has trail slot
+        // Ensure equipped has trail slot (for upgrades from old saves)
         if (!this.data.equipped.trail) {
           this.data.equipped.trail = 'trail_none';
         }
-      } else {
-        this.data = {};
-        for (var k in DEFAULTS) {
-          this.data[k] = typeof DEFAULTS[k] === 'object' && DEFAULTS[k] !== null
-            ? JSON.parse(JSON.stringify(DEFAULTS[k]))
-            : DEFAULTS[k];
+        // Ensure totalCoins exists
+        if (this.data.totalCoins === undefined) {
+          this.data.totalCoins = this.data.coins || 100;
         }
+        // Ensure achievements array exists
+        if (!Array.isArray(this.data.achievements)) {
+          this.data.achievements = [];
+        }
+      } else {
+        this.data = deepClone(DEFAULTS);
       }
     } catch (e) {
-      this.data = {};
-      for (var d in DEFAULTS) {
-        this.data[d] = typeof DEFAULTS[d] === 'object' && DEFAULTS[d] !== null
-          ? JSON.parse(JSON.stringify(DEFAULTS[d]))
-          : DEFAULTS[d];
-      }
+      this.data = deepClone(DEFAULTS);
     }
   }
 
   save() {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.data));
-    } catch (e) { /* fail silently */ }
+    } catch (e) { /* localStorage full or unavailable */ }
   }
 
   get(key) {
@@ -102,21 +111,24 @@ class Storage {
     this.save();
   }
 
+  // --- Card stats with lastSeen for spaced repetition ---
   getCardStat(cardId) {
     var stats = this.get('cardStats');
-    return stats[cardId] || { seen: 0, correct: 0, wrong: 0 };
+    return stats[cardId] || { seen: 0, correct: 0, wrong: 0, lastSeen: 0 };
   }
 
   updateCardStat(cardId, wasCorrect) {
     var stats = this.get('cardStats');
-    var s = stats[cardId] || { seen: 0, correct: 0, wrong: 0 };
+    var s = stats[cardId] || { seen: 0, correct: 0, wrong: 0, lastSeen: 0 };
     s.seen++;
     if (wasCorrect) s.correct++;
     else s.wrong++;
+    s.lastSeen = Date.now();
     stats[cardId] = s;
     this.set('cardStats', stats);
   }
 
+  // --- Subject stats ---
   getSubjectStat(subject) {
     var stats = this.get('subjectStats');
     return stats[subject] || { correct: 0, wrong: 0 };
@@ -131,6 +143,7 @@ class Storage {
     this.set('subjectStats', stats);
   }
 
+  // --- Shop ---
   ownsItem(itemId) {
     return this.get('ownedItems').indexOf(itemId) >= 0;
   }
@@ -142,6 +155,8 @@ class Storage {
     var owned = this.get('ownedItems');
     owned.push(itemId);
     this.set('ownedItems', owned);
+    // Track first purchase achievement
+    this.unlockAchievement('ach_buy_first');
     return true;
   }
 
@@ -151,6 +166,24 @@ class Storage {
     this.set('equipped', eq);
   }
 
+  // --- Coins with lifetime tracking ---
+  addCoins(amount) {
+    this.set('coins', this.get('coins') + amount);
+    this.set('totalCoins', this.get('totalCoins') + amount);
+    // Check coin achievements
+    var total = this.get('totalCoins');
+    if (total >= 500) this.unlockAchievement('ach_coins_500');
+    if (total >= 5000) this.unlockAchievement('ach_coins_5000');
+  }
+
+  spendCoins(amount) {
+    var coins = this.get('coins');
+    if (coins < amount) return false;
+    this.set('coins', coins - amount);
+    return true;
+  }
+
+  // --- Quest progress ---
   getQuestProgress(questId) {
     var p = this.get('questProgress');
     return p[questId] || 0;
@@ -162,6 +195,67 @@ class Storage {
     this.set('questProgress', p);
   }
 
+  // --- Achievements ---
+  hasAchievement(achId) {
+    return this.get('achievements').indexOf(achId) >= 0;
+  }
+
+  unlockAchievement(achId) {
+    if (this.hasAchievement(achId)) return false;
+    var achs = this.get('achievements');
+    achs.push(achId);
+    this.set('achievements', achs);
+    return true; // newly unlocked
+  }
+
+  getAchievementCount() {
+    return this.get('achievements').length;
+  }
+
+  // --- Check achievements based on current stats ---
+  checkAchievements(runData) {
+    var newlyUnlocked = [];
+
+    // Total encounters
+    var te = this.get('totalEncounters');
+    if (te >= 1 && this.unlockAchievement('ach_first_run')) newlyUnlocked.push('ach_first_run');
+    if (te >= 100 && this.unlockAchievement('ach_encounters_100')) newlyUnlocked.push('ach_encounters_100');
+    if (te >= 500 && this.unlockAchievement('ach_encounters_500')) newlyUnlocked.push('ach_encounters_500');
+    if (te >= 1000 && this.unlockAchievement('ach_encounters_1000')) newlyUnlocked.push('ach_encounters_1000');
+
+    // Daily streak
+    var ds = this.get('dailyStreak');
+    if (ds >= 3 && this.unlockAchievement('ach_daily_3')) newlyUnlocked.push('ach_daily_3');
+    if (ds >= 7 && this.unlockAchievement('ach_daily_7')) newlyUnlocked.push('ach_daily_7');
+    if (ds >= 30 && this.unlockAchievement('ach_daily_30')) newlyUnlocked.push('ach_daily_30');
+
+    // Best streak
+    var bs = this.get('bestStreak');
+    if (bs >= 10 && this.unlockAchievement('ach_streak_10')) newlyUnlocked.push('ach_streak_10');
+    if (bs >= 25 && this.unlockAchievement('ach_streak_25')) newlyUnlocked.push('ach_streak_25');
+    if (bs >= 50 && this.unlockAchievement('ach_streak_50')) newlyUnlocked.push('ach_streak_50');
+
+    // Run-specific checks (if runData provided)
+    if (runData) {
+      if (runData.score >= 1000 && this.unlockAchievement('ach_score_1000')) newlyUnlocked.push('ach_score_1000');
+      if (runData.score >= 5000 && this.unlockAchievement('ach_score_5000')) newlyUnlocked.push('ach_score_5000');
+      if (runData.score >= 10000 && this.unlockAchievement('ach_score_10000')) newlyUnlocked.push('ach_score_10000');
+      if (runData.perfect && this.unlockAchievement('ach_perfect_run')) newlyUnlocked.push('ach_perfect_run');
+      if (runData.speed >= 10 && this.unlockAchievement('ach_speed_max')) newlyUnlocked.push('ach_speed_max');
+    }
+
+    // All subjects touched
+    var ss = this.get('subjectStats');
+    var subjectCount = 0;
+    for (var key in ss) {
+      if (ss[key].correct + ss[key].wrong > 0) subjectCount++;
+    }
+    if (subjectCount >= 15 && this.unlockAchievement('ach_all_subjects')) newlyUnlocked.push('ach_all_subjects');
+
+    return newlyUnlocked;
+  }
+
+  // --- Daily check ---
   checkDailyReset() {
     var last = this.get('lastDaily');
     var today = new Date().toDateString();
@@ -171,13 +265,9 @@ class Storage {
     }
   }
 
+  // --- Full reset ---
   reset() {
-    this.data = {};
-    for (var k in DEFAULTS) {
-      this.data[k] = typeof DEFAULTS[k] === 'object' && DEFAULTS[k] !== null
-        ? JSON.parse(JSON.stringify(DEFAULTS[k]))
-        : DEFAULTS[k];
-    }
+    this.data = deepClone(DEFAULTS);
     this.save();
   }
 }
