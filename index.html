@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Buzzword Dash — USMLE & COMLEX Board Runner</title>
+<link rel="stylesheet" href="css/style.css">
+
+<!-- Import map for Three.js from CDN — no npm/bundler needed -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+
+<!-- Three.js renders here -->
+<div id="gameContainer"></div>
+
+<!-- HUD overlay -->
+<div id="hud" class="off">
+  <div class="hud-row">
+    <div class="hud-pill">🪙 <span id="hudCoins">0</span></div>
+    <div class="hud-pill">⭐ <span id="hudScore">0</span></div>
+    <div class="hud-pill">🔥 <span id="hudStreak">0</span></div>
+    <div class="hud-pill">× <span id="hudMulti">1</span></div>
+    <div class="hud-pill">❤️ <span id="hudLives">3</span></div>
+    <div class="hud-pill clickable" id="pauseBtn">⏸</div>
+  </div>
+  <div id="buzzBox"><div id="buzzText">GET READY</div></div>
+  <div id="feedbackEl"></div>
+  <div id="rushEl">⚡ RUSHING ⚡</div>
+  <div id="teachEl"></div>
+  <div class="powerup-row" id="powerupRow"></div>
+</div>
+
+<!-- Countdown overlay -->
+<div id="countdownOverlay"><div id="countdownNum">3</div></div>
+
+<!-- Pause overlay -->
+<div id="pauseOverlay">
+  <h2>⏸ PAUSED</h2>
+  <button class="btn btn-primary btn-block" id="resumeBtn">▶ Resume</button>
+  <button class="btn btn-outline btn-block" id="endRunBtn">🏠 End Run</button>
+</div>
+
+<!-- Tutorial overlay -->
+<div class="tutorial-overlay" id="tutorialOverlay">
+  <div class="tut-page" id="tutPage"></div>
+  <div class="tut-dots" id="tutDots"></div>
+  <button class="btn btn-primary" id="tutNextBtn">Next →</button>
+</div>
+
+<!-- ==================== SCREENS ==================== -->
+
+<!-- HOME -->
+<div class="screen active" id="screenHome">
+  <div class="screen-scroll">
+    <div class="home-header">
+      <h1>⚡ Buzzword Dash</h1>
+      <p>USMLE & COMLEX Board Runner</p>
+    </div>
+    <div class="stat-row" id="homeStats"></div>
+
+    <div class="speed-dial">
+      <label>🏎️ Speed</label>
+      <input type="range" id="speedDial" min="1" max="5" step="0.5" value="1">
+      <div class="speed-value" id="speedValue">1×</div>
+    </div>
+
+    <div style="text-align:center;margin:6px 0">
+      <button class="btn btn-outline btn-sm" id="tutorialBtn">❓ How to Play</button>
+      <button class="btn btn-outline btn-sm" id="musicToggleBtn">🎵 Music: OFF</button>
+    </div>
+
+    <div class="mode-grid">
+      <div class="mode-card" data-mode="endless">
+        <div class="mode-icon">🏃</div>
+        <div class="mode-name">Endless Run</div>
+        <div class="mode-desc">Arcade!</div>
+      </div>
+      <div class="mode-card" data-mode="study">
+        <div class="mode-icon">📖</div>
+        <div class="mode-name">Study Mode</div>
+        <div class="mode-desc">No pressure</div>
+      </div>
+      <div class="mode-card" data-mode="weakness">
+        <div class="mode-icon">🎯</div>
+        <div class="mode-name">Weakness</div>
+        <div class="mode-desc">Weak spots</div>
+      </div>
+      <div class="mode-card" data-mode="daily">
+        <div class="mode-icon">📅</div>
+        <div class="mode-name">Daily Round</div>
+        <div class="mode-desc">15 cards</div>
+      </div>
+    </div>
+
+    <div class="subject-section">
+      <h3>📚 Subjects</h3>
+      <div class="subject-scroll" id="subjectScroll"></div>
+    </div>
+
+    <div style="display:flex;gap:6px;margin-top:10px">
+      <button class="btn btn-gold btn-sm" id="shopBtn" style="flex:1">🧥 Locker</button>
+      <button class="btn btn-outline btn-sm" id="questBtn" style="flex:1">📋 Quests</button>
+    </div>
+
+    <button class="btn btn-outline btn-sm btn-block" id="settingsBtn" style="margin-top:6px">⚙ Settings</button>
+  </div>
+  <div class="bottom-nav">
+    <div class="nav-item active" data-screen="screenHome"><span class="nav-icon">🏠</span>Home</div>
+    <div class="nav-item" data-screen="screenStats"><span class="nav-icon">📊</span>Stats</div>
+    <div class="nav-item" data-screen="screenShop"><span class="nav-icon">🧥</span>Locker</div>
+    <div class="nav-item" data-screen="screenSettings"><span class="nav-icon">⚙</span>Settings</div>
+  </div>
+</div>
+
+<!-- STATS -->
+<div class="screen" id="screenStats">
+  <div class="screen-scroll">
+    <h2 style="margin-bottom:14px">📊 Performance</h2>
+    <div id="statsContent"></div>
+    <button class="btn btn-outline btn-block back-btn" style="margin-top:14px">← Back</button>
+  </div>
+</div>
+
+<!-- SHOP -->
+<div class="screen" id="screenShop">
+  <div class="screen-scroll">
+    <h2 style="margin-bottom:4px">🧥 On-Call Locker</h2>
+    <p class="muted">Coins: <span id="shopCoins" class="gold bold">0</span></p>
+    <div id="shopItems"></div>
+    <button class="btn btn-outline btn-block back-btn" style="margin-top:14px">← Back</button>
+  </div>
+</div>
+
+<!-- QUESTS -->
+<div class="screen" id="screenQuests">
+  <div class="screen-scroll">
+    <h2 style="margin-bottom:14px">📋 Daily Quests</h2>
+    <div id="questList"></div>
+    <button class="btn btn-outline btn-block back-btn" style="margin-top:14px">← Back</button>
+  </div>
+</div>
+
+<!-- SETTINGS -->
+<div class="screen" id="screenSettings">
+  <div class="screen-scroll">
+    <h2 style="margin-bottom:14px">⚙ Settings</h2>
+    <div id="settingsContent"></div>
+    <button class="btn btn-outline btn-block back-btn" style="margin-top:14px">← Back</button>
+  </div>
+</div>
+
+<!-- POST-RUN -->
+<div class="screen" id="screenPostRun">
+  <div class="screen-scroll">
+    <div id="postRunContent"></div>
+  </div>
+</div>
+
+<!-- Load game modules -->
+<script type="module" src="js/main.js"></script>
+
+</body>
+</html>
