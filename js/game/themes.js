@@ -1,8 +1,26 @@
 /**
- * themes.js — Specialty theme color configs
+ * themes.js — Specialty theme color configs with night mode variants
+ *
+ * Each theme defines colors for:
+ * - bg: scene background
+ * - ground: track floor
+ * - wall: side wall color
+ * - glow: accent glow color (lane lines, arch lights, gate glow)
+ * - gate: gate frame color
+ * - accent: secondary accent
+ *
+ * Night mode variants darken backgrounds and reduce glow intensity
+ * while keeping enough contrast for gameplay readability.
+ * Night mode is toggled via storage.get('nightMode') and affects
+ * the 3D scene (not just CSS).
+ *
+ * The engine calls getTheme() on run start and when night mode
+ * is toggled during gameplay.
  */
 
-export const THEMES = {
+import { storage } from '../storage.js';
+
+var THEMES_NORMAL = {
   "Neurology": {
     bg: 0x0a0828, ground: 0x0c0a30, wall: 0x2020aa,
     glow: 0x8844ff, gate: 0x1a1060, accent: 0xaa66ff
@@ -59,15 +77,112 @@ export const THEMES = {
     bg: 0x181008, ground: 0x201408, wall: 0xaa4420,
     glow: 0xff6644, gate: 0x603020, accent: 0xff8866
   },
+  "Multisystem / Mixed": {
+    bg: 0x050816, ground: 0x0a1030, wall: 0x1a3060,
+    glow: 0x18ffff, gate: 0x102040, accent: 0x44ddff
+  },
   "default": {
     bg: 0x050816, ground: 0x0a1030, wall: 0x1a3060,
     glow: 0x18ffff, gate: 0x102040, accent: 0x44ddff
   }
 };
 
-export function getTheme(selectedSubjects) {
-  for (const s of selectedSubjects) {
-    if (THEMES[s]) return THEMES[s];
+// Night mode themes — darker backgrounds, muted glows
+var THEMES_NIGHT = {
+  "Neurology": {
+    bg: 0x040414, ground: 0x060518, wall: 0x151566,
+    glow: 0x5522aa, gate: 0x100a40, accent: 0x7744aa
+  },
+  "Cardiology": {
+    bg: 0x0d0404, ground: 0x100505, wall: 0x661212,
+    glow: 0xaa2222, gate: 0x400a10, accent: 0xaa4444
+  },
+  "Nephrology": {
+    bg: 0x040c10, ground: 0x050c14, wall: 0x144066,
+    glow: 0x228899, gate: 0x0a1830, accent: 0x449999
+  },
+  "Psychiatry": {
+    bg: 0x0a0414, ground: 0x0c0518, wall: 0x551a66,
+    glow: 0x8844aa, gate: 0x280a40, accent: 0x9955aa
+  },
+  "Gastroenterology": {
+    bg: 0x0c0804, ground: 0x100a08, wall: 0x664012,
+    glow: 0xaa7722, gate: 0x402810, accent: 0xaa8844
+  },
+  "Pulmonology": {
+    bg: 0x04080c, ground: 0x050a10, wall: 0x143866,
+    glow: 0x226699, gate: 0x0a1838, accent: 0x448899
+  },
+  "Infectious Disease": {
+    bg: 0x040c04, ground: 0x051005, wall: 0x126628,
+    glow: 0x22aa33, gate: 0x0a2810, accent: 0x44aa55
+  },
+  "Endocrinology": {
+    bg: 0x0c0c04, ground: 0x100f05, wall: 0x666612,
+    glow: 0xaaaa22, gate: 0x383010, accent: 0xaaaa55
+  },
+  "Hematology/Oncology": {
+    bg: 0x0c0408, ground: 0x10050a, wall: 0x661238,
+    glow: 0xaa2266, gate: 0x400a28, accent: 0xaa4488
+  },
+  "Rheumatology": {
+    bg: 0x08040c, ground: 0x0a0510, wall: 0x381266,
+    glow: 0x6622aa, gate: 0x280a40, accent: 0x7744aa
+  },
+  "Obstetrics/Gynecology": {
+    bg: 0x0c040a, ground: 0x10050c, wall: 0x661250,
+    glow: 0xaa2288, gate: 0x400a30, accent: 0xaa5599
+  },
+  "Pediatrics": {
+    bg: 0x04080c, ground: 0x080c14, wall: 0x283866,
+    glow: 0x446699, gate: 0x142838, accent: 0x558899
+  },
+  "Surgery": {
+    bg: 0x050508, ground: 0x08080c, wall: 0x383850,
+    glow: 0x666688, gate: 0x1a1a30, accent: 0x888899
+  },
+  "Emergency Medicine": {
+    bg: 0x0c0804, ground: 0x100a04, wall: 0x662812,
+    glow: 0xaa4422, gate: 0x381810, accent: 0xaa5544
+  },
+  "Multisystem / Mixed": {
+    bg: 0x03040c, ground: 0x050818, wall: 0x101838,
+    glow: 0x0c9999, gate: 0x081028, accent: 0x228899
+  },
+  "default": {
+    bg: 0x03040c, ground: 0x050818, wall: 0x101838,
+    glow: 0x0c9999, gate: 0x081028, accent: 0x228899
   }
-  return THEMES["default"];
+};
+
+/**
+ * Get the active theme based on selected subjects and night mode.
+ * @param {string[]} selectedSubjects - Array of subject names
+ * @returns {object} Theme color config
+ */
+export function getTheme(selectedSubjects) {
+  var isNight = storage.get('nightMode');
+  var themes = isNight ? THEMES_NIGHT : THEMES_NORMAL;
+
+  if (selectedSubjects && selectedSubjects.length > 0) {
+    for (var i = 0; i < selectedSubjects.length; i++) {
+      if (themes[selectedSubjects[i]]) {
+        return themes[selectedSubjects[i]];
+      }
+    }
+  }
+
+  return themes["default"];
+}
+
+/**
+ * Get theme for a specific subject name.
+ * Used by props.js for specialty-specific decorations.
+ * @param {string} subject
+ * @returns {object} Theme color config
+ */
+export function getSubjectTheme(subject) {
+  var isNight = storage.get('nightMode');
+  var themes = isNight ? THEMES_NIGHT : THEMES_NORMAL;
+  return themes[subject] || themes["default"];
 }
