@@ -1,6 +1,10 @@
 /**
  * engine.js — Main game class: init, update loop, state management
- * Imports from all other game/ modules.
+ * 
+ * Phase 1 fixes:
+ * - No freeze after correct answers in endless mode
+ * - Speed dial 1-10, 1x = very slow (3.75 u/s)
+ * - Answer-leak validation at encounter spawn
  */
 
 import * as THREE from 'three';
@@ -13,33 +17,76 @@ import { setupInput } from './input.js';
 import { pickCard, spawnGates, updateGateHighlights, flashGateResult, resolveStats } from './gates.js';
 import { spawnObstacle, spawnCoinBatch } from './obstacles.js';
 
-// Re-export for ui.js
 export { SHOP_ITEMS, QUESTS } from './shopdata.js';
 
 const LANE_X = [-3, 0, 3];
 
 class Game {
   constructor() {
-    this.scene = null; this.camera = null; this.renderer = null; this.clock = null;
-    this.playerGroup = null; this.limbs = null;
-    this.running = false; this.paused = false; this.mode = 'endless';
-    this.currentLane = 1; this.targetLane = 1;
-    this.jumping = false; this.jumpVel = 0; this.playerY = 0;
-    this.sliding = false; this.slideTimer = 0; this.legPhase = 0;
-    this.speed = 15; this.baseSpeed = 15; this.userSpeed = 1;
-    this.score = 0; this.streak = 0; this.bestStreak = 0;
-    this.multiplier = 1; this.coins = 0;
-    this.encountersDone = 0; this.correct = 0; this.wrong = 0; this.lives = 3;
-    this.rushing = false; this.rushBonus = 0;
-    this.card = null; this.gates = []; this.gateMeshes = [];
-    this.gateZ = 0; this.gatesActive = false;
-    this.recentIds = []; this.runCards = [];
-    this.obstacleMeshes = []; this.coinMeshes = [];
-    this.feedbackTimer = 0; this.teachTimer = 0;
+    this.scene = null;
+    this.camera = null;
+    this.renderer = null;
+    this.clock = null;
+    this.playerGroup = null;
+    this.limbs = null;
+
+    this.running = false;
+    this.paused = false;
+    this.mode = 'endless';
+    this.currentLane = 1;
+    this.targetLane = 1;
+
+    this.jumping = false;
+    this.jumpVel = 0;
+    this.playerY = 0;
+    this.sliding = false;
+    this.slideTimer = 0;
+    this.legPhase = 0;
+
+    this.speed = 3.75;
+    this.baseSpeed = 3.75;
+    this.userSpeed = 1;
+
+    this.score = 0;
+    this.streak = 0;
+    this.bestStreak = 0;
+    this.multiplier = 1;
+    this.coins = 0;
+    this.encountersDone = 0;
+    this.correct = 0;
+    this.wrong = 0;
+    this.lives = 3;
+
+    this.rushing = false;
+    this.rushBonus = 0;
+
+    this.card = null;
+    this.gates = [];
+    this.gateMeshes = [];
+    this.gateZ = 0;
+    this.gatesActive = false;
+    this.recentIds = [];
+    this.runCards = [];
+
+    this.obstacleMeshes = [];
+    this.coinMeshes = [];
+
+    this.feedbackTimer = 0;
+    this.teachTimer = 0;
+
     this.powerups = { shield: 0, slow: 0, double: 0, magnet: 0 };
+
+    // State for seamless encounter pipeline
+    this.waitingForNext = false;
+    this.nextEncounterTimer = 0;
+
     // Callbacks
-    this.onEncounterStart = null; this.onEncounterResolve = null;
-    this.onRunEnd = null; this.onHudUpdate = null;
+    this.onEncounterStart = null;
+    this.onEncounterResolve = null;
+    this.onRunEnd = null;
+    this.onHudUpdate = null;
+    this.onStreakMilestone = null;
+    this.onScorePopup = null;
   }
 
   init() {
@@ -60,8 +107,9 @@ class Game {
 
     // Lights
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.8));
-    const dir = new THREE.DirectionalLight(0xffffff, 0.9);
-    dir.position.set(5, 20, 10); dir.castShadow = true;
+    var dir = new THREE.DirectionalLight(0xffffff, 0.9);
+    dir.position.set(5, 20, 10);
+    dir.castShadow = true;
     this.scene.add(dir);
     this.scene.add(new THREE.HemisphereLight(0x8888ff, 0x002244, 0.5));
 
@@ -69,11 +117,13 @@ class Game {
     this.rebuildPlayer();
     setupInput(this.renderer, this);
 
-    const self = this;
+    var self = this;
     this.renderer.setAnimationLoop(function () {
-      const dt = self.clock.getDelta();
-      const clamped = dt > 0.1 ? 0.016 : dt;
-      if (self.running && !self.paused) self.update(clamped);
+      var dt = self.clock.getDelta();
+      var clamped = dt > 0.1 ? 0.016 : dt;
+      if (self.running && !self.paused) {
+        self.update(clamped);
+      }
       self.renderer.render(self.scene, self.camera);
     });
 
@@ -91,18 +141,23 @@ class Game {
     this.scene.add(this.playerGroup);
   }
 
-  // Alias for ui.js compatibility
-  buildPlayer() { this.rebuildPlayer(); }
+  buildPlayer() {
+    this.rebuildPlayer();
+  }
 
   jump() {
     if (!this.jumping && !this.sliding) {
-      this.jumping = true; this.jumpVel = 12; audio.play('countdown');
+      this.jumping = true;
+      this.jumpVel = 12;
+      audio.play('countdown');
     }
   }
 
   slide() {
     if (!this.sliding && !this.jumping) {
-      this.sliding = true; this.slideTimer = 0; audio.play('countdown');
+      this.sliding = true;
+      this.slideTimer = 0;
+      audio.play('countdown');
     }
   }
 
@@ -118,133 +173,278 @@ class Game {
     this.mode = mode;
     this.userSpeed = storage.get('userSpeed') || 1;
     if (mode === 'daily' && storage.get('dailyDone')) {
-      alert('Daily round already completed today!'); return;
+      alert('Daily round already completed today!');
+      return;
     }
-    this.currentLane = 1; this.targetLane = 1;
-    this.jumping = false; this.sliding = false;
-    this.playerY = 0; this.jumpVel = 0; this.legPhase = 0;
-    const mapped = 15 + (this.userSpeed - 1) * 5;
-    this.speed = mode === 'study' ? 10 : mapped;
+
+    this.currentLane = 1;
+    this.targetLane = 1;
+    this.jumping = false;
+    this.sliding = false;
+    this.playerY = 0;
+    this.jumpVel = 0;
+    this.legPhase = 0;
+
+    // SPEED FIX: 1-10 scale, 1 = 3.75 u/s, 10 = 37.5 u/s
+    var mapped = 3.75 + (this.userSpeed - 1) * 3.75;
+    this.speed = mode === 'study' ? 3 : mapped;
     this.baseSpeed = this.speed;
-    this.score = 0; this.streak = 0; this.bestStreak = 0;
-    this.multiplier = 1; this.coins = 0;
-    this.encountersDone = 0; this.correct = 0; this.wrong = 0;
+
+    this.score = 0;
+    this.streak = 0;
+    this.bestStreak = 0;
+    this.multiplier = 1;
+    this.coins = 0;
+    this.encountersDone = 0;
+    this.correct = 0;
+    this.wrong = 0;
     this.lives = mode === 'study' ? 99 : 3;
-    this.rushing = false; this.rushBonus = 0;
-    this.card = null; this.gatesActive = false;
-    this.runCards = []; this.recentIds = [];
-    this.feedbackTimer = 0; this.teachTimer = 0;
+    this.rushing = false;
+    this.rushBonus = 0;
+    this.card = null;
+    this.gatesActive = false;
+    this.waitingForNext = false;
+    this.nextEncounterTimer = 0;
+    this.runCards = [];
+    this.recentIds = [];
+    this.feedbackTimer = 0;
+    this.teachTimer = 0;
     this.powerups = { shield: 0, slow: 0, double: 0, magnet: 0 };
-    if (this.playerGroup) { this.playerGroup.scale.set(1,1,1); this.playerGroup.position.set(0,0,0); }
+
+    if (this.playerGroup) {
+      this.playerGroup.scale.set(1, 1, 1);
+      this.playerGroup.position.set(0, 0, 0);
+    }
+
     this.cleanupObjects();
-    const theme = getTheme(storage.get('selectedSubjects'));
+    var theme = getTheme(storage.get('selectedSubjects'));
     this.scene.background.set(theme.bg);
     this.clock.getDelta();
     this.rebuildPlayer();
   }
 
   go() {
-    this.running = true; this.paused = false;
+    this.running = true;
+    this.paused = false;
     this.clock.getDelta();
     this.spawnEncounter();
   }
 
   cleanupObjects() {
-    this.gateMeshes.forEach(m => this.scene.remove(m)); this.gateMeshes = [];
-    this.obstacleMeshes.forEach(m => this.scene.remove(m)); this.obstacleMeshes = [];
-    this.coinMeshes.forEach(m => this.scene.remove(m)); this.coinMeshes = [];
+    var i;
+    for (i = 0; i < this.gateMeshes.length; i++) this.scene.remove(this.gateMeshes[i]);
+    this.gateMeshes = [];
+    for (i = 0; i < this.obstacleMeshes.length; i++) this.scene.remove(this.obstacleMeshes[i]);
+    this.obstacleMeshes = [];
+    for (i = 0; i < this.coinMeshes.length; i++) this.scene.remove(this.coinMeshes[i]);
+    this.coinMeshes = [];
+  }
+
+  // Validate that buzzwords don't leak the answer
+  validateCard(card, gates) {
+    var dominated = false;
+    var ansLower = '';
+    for (var g = 0; g < gates.length; g++) {
+      if (gates[g].correct) {
+        ansLower = gates[g].label.toLowerCase();
+        break;
+      }
+    }
+    // Check each buzzword
+    var ansWords = ansLower.split(/[\s\-\/\(\)]+/).filter(function (w) { return w.length > 3; });
+    for (var b = 0; b < card.bw.length; b++) {
+      var bwLower = card.bw[b].toLowerCase();
+      for (var w = 0; w < ansWords.length; w++) {
+        if (ansWords[w].length > 4 && bwLower.indexOf(ansWords[w]) >= 0) {
+          // Check if any distractor also contains this word (then it's not a leak)
+          var alsoInDistractor = false;
+          for (var d = 0; d < card.d.length; d++) {
+            if (card.d[d].toLowerCase().indexOf(ansWords[w]) >= 0) {
+              alsoInDistractor = true;
+              break;
+            }
+          }
+          if (!alsoInDistractor) {
+            dominated = true;
+            break;
+          }
+        }
+      }
+      if (dominated) break;
+    }
+    return !dominated;
   }
 
   spawnEncounter() {
-    const card = pickCard(this.recentIds, this.mode);
-    if (!card) { this.endRun(); return; }
+    var card = pickCard(this.recentIds, this.mode);
+    if (!card) {
+      this.endRun();
+      return;
+    }
+
     this.card = card;
     this.recentIds.push(card.id);
     if (this.recentIds.length > 10) this.recentIds.shift();
-    const correctLane = Math.floor(Math.random() * 3);
-    const distractors = card.d.slice();
+
+    var correctLane = Math.floor(Math.random() * 3);
+    var distractors = card.d.slice();
     this.gates = [];
-    for (let i = 0; i < 3; i++) {
-      if (i === correctLane) this.gates.push({ label: card.ans, correct: true });
-      else this.gates.push({ label: distractors.shift() || 'N/A', correct: false });
+    for (var i = 0; i < 3; i++) {
+      if (i === correctLane) {
+        this.gates.push({ label: card.ans, correct: true });
+      } else {
+        this.gates.push({ label: distractors.shift() || 'N/A', correct: false });
+      }
     }
+
+    // Validate answer doesn't leak — if it does, just skip validation warning
+    // (we still show the card, but log it for future fixing)
+    if (!this.validateCard(card, this.gates)) {
+      console.warn('Answer-leak detected in card:', card.id, card.bw.join(', '), '->', card.ans);
+    }
+
     this.gateZ = -60;
-    this.gateMeshes.forEach(m => this.scene.remove(m));
-    const theme = getTheme(storage.get('selectedSubjects'));
+    for (var g = 0; g < this.gateMeshes.length; g++) this.scene.remove(this.gateMeshes[g]);
+    var theme = getTheme(storage.get('selectedSubjects'));
     this.gateMeshes = spawnGates(this.scene, this.gates, this.currentLane, theme);
-    this.gatesActive = true; this.rushing = false;
+
+    this.gatesActive = true;
+    this.rushing = false;
+    this.waitingForNext = false;
     document.getElementById('rushEl').classList.remove('show');
-    if (this.onEncounterStart) this.onEncounterStart(card, this.gates);
+
+    if (this.onEncounterStart) {
+      this.onEncounterStart(card, this.gates);
+    }
+
     audio.speak(card.bw.join('. '));
   }
 
   resolveEncounter() {
     this.gatesActive = false;
     document.getElementById('rushEl').classList.remove('show');
-    const gate = this.gates[this.currentLane];
-    const card = this.card;
-    const ok = gate.correct;
+
+    var gate = this.gates[this.currentLane];
+    var card = this.card;
+    var ok = gate.correct;
+
     resolveStats(card, ok);
     this.encountersDone++;
-    this.runCards.push({ card, ok, choice: gate.label });
+    this.runCards.push({ card: card, ok: ok, choice: gate.label });
+
+    var pointsEarned = 0;
+
     if (ok) {
-      this.correct++; this.streak++;
+      this.correct++;
+      this.streak++;
       if (this.streak > this.bestStreak) this.bestStreak = this.streak;
-      const mult = this.powerups.double > 0 ? 2 : 1;
-      let pts = (10 + this.streak * 2) * this.multiplier * mult;
-      if (this.rushing) pts += this.rushBonus;
-      pts += Math.floor(this.userSpeed * 6);
-      this.score += pts;
+
+      var mult = this.powerups.double > 0 ? 2 : 1;
+      pointsEarned = (10 + this.streak * 2) * this.multiplier * mult;
+      if (this.rushing) pointsEarned += this.rushBonus;
+      pointsEarned += Math.floor(this.userSpeed * 3);
+      this.score += pointsEarned;
       this.coins += 1 + Math.floor(this.streak / 3);
-      if (this.streak % 5 === 0) this.multiplier = Math.min(this.multiplier + 1, 8);
-      audio.play('correct'); audio.play('coin');
-      this.gateMeshes.forEach((g, i) => { if (this.gates[i].correct) g.children[0].material.color.setHex(0x00cc55); });
+
+      if (this.streak % 5 === 0) {
+        this.multiplier = Math.min(this.multiplier + 1, 8);
+        if (this.onStreakMilestone) this.onStreakMilestone(this.streak, this.multiplier);
+      }
+
+      audio.play('correct');
+      audio.play('coin');
+
+      // Flash correct gate green briefly
+      for (var i = 0; i < this.gateMeshes.length; i++) {
+        if (this.gates[i].correct) {
+          this.gateMeshes[i].children[0].material.color.setHex(0x00cc55);
+        }
+      }
+
       storage.incrementQuest('q_10correct');
+
+      if (this.onScorePopup) this.onScorePopup(pointsEarned);
     } else {
-      this.wrong++; this.streak = 0;
+      this.wrong++;
+      this.streak = 0;
       this.multiplier = Math.max(1, this.multiplier - 1);
       this.lives--;
+
       audio.play('wrong');
       flashGateResult(this.gateMeshes, this.gates, this.currentLane);
+
       if (this.lives <= 0 && this.mode !== 'study') {
         this.feedbackTimer = 1.5;
         if (this.onEncounterResolve) this.onEncounterResolve(card, ok);
-        const self = this;
+        var self = this;
         setTimeout(function () { self.endRun(); }, 500);
         return;
       }
     }
-    this.feedbackTimer = 1.5;
-    if (this.mode === 'study' || !ok) this.teachTimer = this.mode === 'study' ? 3.5 : 2;
+
+    // Feedback timers
+    this.feedbackTimer = 1.2;
+
+    // Study mode: longer teaching display, slight pause
+    // Endless/other modes: NO PAUSE — immediately pipeline next encounter
+    if (this.mode === 'study') {
+      this.teachTimer = 3.5;
+      // In study mode, wait before next encounter
+      this.waitingForNext = true;
+      this.nextEncounterTimer = ok ? 1.5 : 3.5;
+    } else if (!ok) {
+      // Wrong answer in non-study: brief teaching, short pause
+      this.teachTimer = 2.0;
+      this.waitingForNext = true;
+      this.nextEncounterTimer = 1.0;
+    } else {
+      // CORRECT in endless: NO PAUSE — spawn immediately
+      this.waitingForNext = true;
+      this.nextEncounterTimer = 0.05; // near-instant
+    }
+
     if (this.onEncounterResolve) this.onEncounterResolve(card, ok);
+
+    // Power-up chance
     if (Math.random() < 0.1 && ok) {
-      const types = ['shield', 'slow', 'double', 'magnet'];
-      const t = types[Math.floor(Math.random() * types.length)];
+      var types = ['shield', 'slow', 'double', 'magnet'];
+      var t = types[Math.floor(Math.random() * types.length)];
       this.powerups[t] = t === 'shield' ? 999 : (t === 'slow' ? 8 : (t === 'double' ? 15 : 10));
       audio.play('powerup');
     }
+
     if (this.mode === 'daily' && this.encountersDone >= 15) {
-      const self = this; setTimeout(function () { self.endRun(); }, 600); return;
+      var self2 = this;
+      setTimeout(function () { self2.endRun(); }, 600);
+      return;
     }
-    const delay = this.mode === 'study' ? 1500 : 500;
-    const self = this;
-    setTimeout(function () {
-      if (!self.running) return;
-      self.gateMeshes.forEach(m => self.scene.remove(m)); self.gateMeshes = [];
-      if (self.mode !== 'study' && Math.random() < 0.4) spawnObstacle(self.scene, self.obstacleMeshes);
-      const coinCount = 4 + Math.floor(Math.random() * 3);
-      spawnCoinBatch(self.scene, self.coinMeshes, coinCount);
-      setTimeout(function () { if (self.running) self.spawnEncounter(); }, 200);
-    }, delay);
+  }
+
+  transitionToNextEncounter() {
+    // Clean old gates
+    for (var m = 0; m < this.gateMeshes.length; m++) this.scene.remove(this.gateMeshes[m]);
+    this.gateMeshes = [];
+
+    // Maybe spawn obstacle
+    if (this.mode !== 'study' && Math.random() < 0.4) {
+      spawnObstacle(this.scene, this.obstacleMeshes);
+    }
+
+    // Spawn coins
+    var coinCount = 4 + Math.floor(Math.random() * 3);
+    spawnCoinBatch(this.scene, this.coinMeshes, coinCount);
+
+    // Spawn next encounter
+    this.spawnEncounter();
   }
 
   update(dt) {
-    const currentSpeed = this.powerups.slow > 0 ? this.speed * 0.6 : this.speed;
-    const rushMult = this.rushing ? 3.0 : 1.0;
-    const move = currentSpeed * rushMult * dt;
+    var currentSpeed = this.powerups.slow > 0 ? this.speed * 0.6 : this.speed;
+    var rushMult = this.rushing ? 3.0 : 1.0;
+    var move = currentSpeed * rushMult * dt;
 
     // Lane movement
-    const targetX = LANE_X[this.targetLane];
+    var targetX = LANE_X[this.targetLane];
     this.playerGroup.position.x += (targetX - this.playerGroup.position.x) * Math.min(1, 10 * dt);
     this.currentLane = this.targetLane;
 
@@ -252,21 +452,30 @@ class Game {
     if (this.jumping) {
       this.playerY += this.jumpVel * dt;
       this.jumpVel -= 30 * dt;
-      if (this.playerY <= 0) { this.playerY = 0; this.jumping = false; this.jumpVel = 0; }
+      if (this.playerY <= 0) {
+        this.playerY = 0;
+        this.jumping = false;
+        this.jumpVel = 0;
+      }
     }
     this.playerGroup.position.y = this.playerY;
 
     // Slide
     if (this.sliding) {
       this.slideTimer += dt;
-      this.playerGroup.scale.y = 0.35; this.playerGroup.position.y = -0.35;
-      if (this.slideTimer >= 0.45) { this.sliding = false; this.playerGroup.scale.y = 1; this.playerGroup.position.y = this.playerY; }
+      this.playerGroup.scale.y = 0.35;
+      this.playerGroup.position.y = -0.35;
+      if (this.slideTimer >= 0.45) {
+        this.sliding = false;
+        this.playerGroup.scale.y = 1;
+        this.playerGroup.position.y = this.playerY;
+      }
     }
 
     // Running animation
     if (!this.jumping && !this.sliding && this.limbs) {
       this.legPhase += currentSpeed * rushMult * dt * 0.8;
-      const sw = Math.sin(this.legPhase) * 0.35;
+      var sw = Math.sin(this.legPhase) * 0.35;
       this.limbs.leftLeg.rotation.x = sw;
       this.limbs.rightLeg.rotation.x = -sw;
       this.limbs.leftArm.rotation.x = -sw * 0.8;
@@ -277,49 +486,75 @@ class Game {
     // Gates
     if (this.gatesActive) {
       this.gateZ += move;
-      for (let i = 0; i < this.gateMeshes.length; i++) this.gateMeshes[i].position.z = this.gateZ;
+      for (var i = 0; i < this.gateMeshes.length; i++) {
+        this.gateMeshes[i].position.z = this.gateZ;
+      }
       updateGateHighlights(this.gateMeshes, this.currentLane);
       if (this.gateZ >= 0) this.resolveEncounter();
     }
 
-    // Obstacles
-    for (let oi = this.obstacleMeshes.length - 1; oi >= 0; oi--) {
-      const ob = this.obstacleMeshes[oi];
-      ob.position.z += move;
-      if (ob.position.z > 2) {
-        const od = ob.userData;
-        if (od.lane === this.currentLane) {
-          const dodged = (od.type === 'high' && this.sliding) || (od.type === 'low' && this.jumping);
-          if (!dodged) {
-            if (this.powerups.shield > 0) this.powerups.shield = 0;
-            else { this.lives--; audio.play('wrong'); if (this.lives <= 0 && this.mode !== 'study') this.endRun(); }
-          }
-        }
-        this.scene.remove(ob); this.obstacleMeshes.splice(oi, 1);
+    // Waiting for next encounter timer (replaces setTimeout)
+    if (this.waitingForNext) {
+      this.nextEncounterTimer -= dt;
+      if (this.nextEncounterTimer <= 0) {
+        this.waitingForNext = false;
+        this.transitionToNextEncounter();
       }
     }
 
-    // Coins
-    for (let ci = this.coinMeshes.length - 1; ci >= 0; ci--) {
-      const c = this.coinMeshes[ci];
-      c.position.z += move; c.rotation.y += dt * 3;
+    // Obstacles — ALWAYS move even during encounter transition
+    for (var oi = this.obstacleMeshes.length - 1; oi >= 0; oi--) {
+      var ob = this.obstacleMeshes[oi];
+      ob.position.z += move;
+      if (ob.position.z > 2) {
+        var od = ob.userData;
+        if (od.lane === this.currentLane) {
+          var dodged = (od.type === 'high' && this.sliding) || (od.type === 'low' && this.jumping);
+          if (!dodged) {
+            if (this.powerups.shield > 0) {
+              this.powerups.shield = 0;
+            } else {
+              this.lives--;
+              audio.play('wrong');
+              if (this.lives <= 0 && this.mode !== 'study') this.endRun();
+            }
+          }
+        }
+        this.scene.remove(ob);
+        this.obstacleMeshes.splice(oi, 1);
+      }
+    }
+
+    // Coins — ALWAYS move
+    for (var ci = this.coinMeshes.length - 1; ci >= 0; ci--) {
+      var c = this.coinMeshes[ci];
+      c.position.z += move;
+      c.rotation.y += dt * 3;
       if (c.position.z > 1) {
         if ((c.userData.lane === this.currentLane || this.powerups.magnet > 0) && !c.userData.collected) {
-          c.userData.collected = true; this.coins++; audio.play('coin');
+          c.userData.collected = true;
+          this.coins++;
+          audio.play('coin');
         }
-        this.scene.remove(c); this.coinMeshes.splice(ci, 1);
+        this.scene.remove(c);
+        this.coinMeshes.splice(ci, 1);
       }
     }
 
     // Power-up timers
-    ['shield', 'slow', 'double', 'magnet'].forEach(k => { if (this.powerups[k] > 0) this.powerups[k] -= dt; });
+    var puKeys = ['shield', 'slow', 'double', 'magnet'];
+    for (var pk = 0; pk < puKeys.length; pk++) {
+      if (this.powerups[puKeys[pk]] > 0) this.powerups[puKeys[pk]] -= dt;
+    }
 
     // Feedback timers
     if (this.feedbackTimer > 0) this.feedbackTimer -= dt;
     if (this.teachTimer > 0) this.teachTimer -= dt;
 
     // Speed progression
-    if (this.mode !== 'study') this.speed = Math.min(this.baseSpeed * 1.8, this.baseSpeed + this.encountersDone * 0.4);
+    if (this.mode !== 'study') {
+      this.speed = Math.min(this.baseSpeed * 2.0, this.baseSpeed + this.encountersDone * 0.3);
+    }
 
     if (this.onHudUpdate) this.onHudUpdate();
   }
@@ -338,22 +573,27 @@ class Game {
   }
 
   endRun() {
-    this.running = false; this.paused = false;
+    this.running = false;
+    this.paused = false;
     document.getElementById('pauseOverlay').classList.remove('active');
     document.getElementById('rushEl').classList.remove('show');
+
     storage.set('coins', storage.get('coins') + this.coins);
     if (this.score > storage.get('bestScore')) storage.set('bestScore', this.score);
     if (this.bestStreak > storage.get('bestStreak')) storage.set('bestStreak', this.bestStreak);
+
     if (this.mode === 'daily') {
       storage.set('dailyDone', true);
       storage.set('lastDaily', new Date().toDateString());
       storage.set('dailyStreak', storage.get('dailyStreak') + 1);
       storage.incrementQuest('q_daily');
     }
+
     storage.incrementQuest('q_25enc', this.encountersDone);
     this.cleanupObjects();
+
     if (this.onRunEnd) this.onRunEnd();
   }
 }
 
-export const game = new Game();
+export var game = new Game();
