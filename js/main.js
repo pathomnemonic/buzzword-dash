@@ -2,7 +2,7 @@
  * main.js — Initialization and wiring
  */
 
-import { game } from './game.js';
+import { game } from './game/engine.js';
 import { ui } from './ui.js';
 import { storage } from './storage.js';
 import { audio } from './audio.js';
@@ -10,7 +10,7 @@ import { CARDS } from './cards.js';
 
 function startMode(mode) {
   if (mode === 'daily' && storage.get('dailyDone')) {
-    alert('Daily round already completed today! Come back tomorrow.');
+    alert('Daily round already completed today!');
     return;
   }
   if (mode === 'weakness') {
@@ -25,13 +25,10 @@ function startMode(mode) {
       return;
     }
   }
-
   game.start(mode);
   ui.hideAll();
   ui.showHud();
-  ui.countdown(function () {
-    game.go();
-  });
+  ui.countdown(function () { game.go(); });
 }
 
 function init() {
@@ -40,68 +37,33 @@ function init() {
   game.init();
   ui.init();
 
-  // Wire game → UI callbacks
-
-  // When encounter starts, show buzzwords AND answer choices in HTML
   game.onEncounterStart = function (card, gates) {
     ui.showBuzzwords(card);
     ui.showAnswerChoices(gates);
   };
-
   game.onEncounterResolve = function (card, wasCorrect) {
     ui.showFeedback(card, wasCorrect);
-    if (game.mode === 'study' && wasCorrect) {
-      ui.showStudyTeaching(card);
-    }
+    if (game.mode === 'study' && wasCorrect) ui.showStudyTeaching(card);
   };
-
   game.onRunEnd = function () {
     ui.hideHud();
     ui.hideAnswerChoices();
     ui.showPostRun(game);
-
     var againBtn = document.getElementById('playAgainBtn');
-    if (againBtn) {
-      againBtn.addEventListener('click', function () {
-        startMode(game.mode);
-      });
-    }
+    if (againBtn) againBtn.addEventListener('click', function () { startMode(game.mode); });
     var weakBtn = document.getElementById('weaknessBtn');
-    if (weakBtn) {
-      weakBtn.addEventListener('click', function () {
-        startMode('weakness');
-      });
-    }
+    if (weakBtn) weakBtn.addEventListener('click', function () { startMode('weakness'); });
   };
+  game.onHudUpdate = function () { ui.updateHud(game); };
+  ui.onEquipChange = function () { game.buildPlayer(); };
 
-  game.onHudUpdate = function () {
-    ui.updateHud(game);
-  };
-
-  ui.onEquipChange = function () {
-    game.buildPlayer();
-  };
-
-  // Bind mode-select buttons
   document.querySelectorAll('.mode-card').forEach(function (card) {
-    card.addEventListener('click', function () {
-      var mode = this.dataset.mode;
-      startMode(mode);
-    });
+    card.addEventListener('click', function () { startMode(this.dataset.mode); });
   });
+  document.getElementById('pauseBtn').addEventListener('click', function () { game.togglePause(); });
+  document.getElementById('resumeBtn').addEventListener('click', function () { game.resume(); });
+  document.getElementById('endRunBtn').addEventListener('click', function () { game.endRun(); });
 
-  // Bind pause/resume
-  document.getElementById('pauseBtn').addEventListener('click', function () {
-    game.togglePause();
-  });
-  document.getElementById('resumeBtn').addEventListener('click', function () {
-    game.resume();
-  });
-  document.getElementById('endRunBtn').addEventListener('click', function () {
-    game.endRun();
-  });
-
-  // Music auto-start
   if (storage.get('musicOn')) {
     document.addEventListener('click', function startMusicOnce() {
       audio.startMusic();
@@ -109,8 +71,6 @@ function init() {
       document.removeEventListener('click', startMusicOnce);
     }, { once: true });
   }
-
-  // Prevent pull-to-refresh
   document.addEventListener('touchmove', function (e) {
     if (game.running) e.preventDefault();
   }, { passive: false });
