@@ -1,13 +1,29 @@
 /**
  * track.js — Track with flying environment props
  *
- * All decorations now fly toward the camera instead of being static.
- * Props are managed by the engine via envPropMeshes array.
- * Track includes overhead light arches and pulsing lane lines.
+ * All decorations fly toward the camera instead of being static,
+ * creating the classic endless runner illusion where "the world
+ * rushes toward you" rather than the player moving forward.
+ *
+ * Track includes:
+ * - Ground with lane dividers
+ * - Side walls with glow strips
+ * - Overhead light arches for tunnel feel
+ * - Static pillar lights along walls
+ * - Flying environment prop spawner (called from engine.js)
+ *
+ * Props are specialty-themed using getSpecialtyProps() from props.js
+ * so Neurology shows brains/neurons, Cardiology shows hearts/ECGs, etc.
+ *
+ * Performance notes:
+ * - Uses MeshBasicMaterial for guaranteed visibility without lighting
+ * - Uses MeshStandardMaterial where shadows matter
+ * - All flying props are cleaned up when they pass z=10
+ * - Object pooling could be added later for higher prop density
  */
 
 import * as THREE from 'three';
-import { PROP_BUILDERS } from './props.js';
+import { PROP_BUILDERS, getSpecialtyProps } from './props.js';
 
 export function buildTrack(scene, theme) {
   // Ground
@@ -36,6 +52,7 @@ export function buildTrack(scene, theme) {
   // Side walls
   var wallMat = new THREE.MeshBasicMaterial({ color: theme.wall });
   for (var side = -1; side <= 1; side += 2) {
+    // Main wall
     var wall = new THREE.Mesh(new THREE.BoxGeometry(0.25, 3.5, 400), wallMat);
     wall.position.set(side * 6, 1.75, -190);
     scene.add(wall);
@@ -57,9 +74,9 @@ export function buildTrack(scene, theme) {
     scene.add(bottomGlow);
   }
 
-  // Overhead light arches
+  // Overhead light arches — gives tunnel/corridor feel
   for (var z = -160; z < 20; z += 25) {
-    // Arch legs
+    // Arch legs on each side
     for (var archSide = -1; archSide <= 1; archSide += 2) {
       var archLeg = new THREE.Mesh(
         new THREE.CylinderGeometry(0.08, 0.08, 5, 6),
@@ -68,14 +85,16 @@ export function buildTrack(scene, theme) {
       archLeg.position.set(archSide * 5.5, 2.5, z);
       scene.add(archLeg);
     }
-    // Arch beam
+
+    // Arch beam across the top
     var archBeam = new THREE.Mesh(
       new THREE.BoxGeometry(11.2, 0.12, 0.12),
       new THREE.MeshBasicMaterial({ color: theme.glow, transparent: true, opacity: 0.3 })
     );
     archBeam.position.set(0, 5, z);
     scene.add(archBeam);
-    // Light on arch
+
+    // Glowing light on arch center
     var archLight = new THREE.Mesh(
       new THREE.SphereGeometry(0.15, 8, 8),
       new THREE.MeshBasicMaterial({ color: theme.glow })
@@ -93,6 +112,7 @@ export function buildTrack(scene, theme) {
       );
       pillar.position.set(side2 * 5.3, 1.75, pz);
       scene.add(pillar);
+
       var sphere = new THREE.Mesh(
         new THREE.SphereGeometry(0.15, 8, 8),
         new THREE.MeshBasicMaterial({ color: theme.glow })
@@ -104,30 +124,52 @@ export function buildTrack(scene, theme) {
 }
 
 // ===== FLYING ENVIRONMENT PROPS =====
-// Called by engine.js to spawn props that fly toward the camera
+// Called by engine.js every 1-3 seconds to spawn props that fly toward camera
 
-export function spawnEnvProp(scene, envPropMeshes) {
-  var builder = PROP_BUILDERS[Math.floor(Math.random() * PROP_BUILDERS.length)];
+export function spawnEnvProp(scene, envPropMeshes, selectedSubjects) {
+  // Use specialty-themed props when subjects are selected
+  var builders = selectedSubjects ? getSpecialtyProps(selectedSubjects) : PROP_BUILDERS;
+  var builder = builders[Math.floor(Math.random() * builders.length)];
   var prop = builder();
 
-  // Spawn on left or right side, or overhead
+  // Decide placement: left side, right side, or overhead
   var placement = Math.random();
-  if (placement < 0.4) {
-    // Left side
-    prop.position.set(-7 - Math.random() * 3, Math.random() * 2, -80);
-  } else if (placement < 0.8) {
+  if (placement < 0.35) {
+    // Left side — varies from track edge to far left
+    prop.position.set(
+      -7 - Math.random() * 4,
+      Math.random() * 3,
+      -80 - Math.random() * 20
+    );
+  } else if (placement < 0.7) {
     // Right side
-    prop.position.set(7 + Math.random() * 3, Math.random() * 2, -80);
+    prop.position.set(
+      7 + Math.random() * 4,
+      Math.random() * 3,
+      -80 - Math.random() * 20
+    );
+  } else if (placement < 0.9) {
+    // Overhead — flying above the track
+    prop.position.set(
+      (Math.random() - 0.5) * 10,
+      4 + Math.random() * 4,
+      -80 - Math.random() * 20
+    );
   } else {
-    // Overhead
-    prop.position.set((Math.random() - 0.5) * 8, 4 + Math.random() * 3, -80);
+    // Dramatic close pass — larger, near the track
+    prop.position.set(
+      (Math.random() < 0.5 ? -1 : 1) * (5 + Math.random() * 2),
+      1 + Math.random() * 2,
+      -90 - Math.random() * 10
+    );
   }
 
   // Random rotation for variety
   prop.rotation.y = Math.random() * Math.PI * 2;
+  prop.rotation.x = (Math.random() - 0.5) * 0.3;
 
-  // Scale variation
-  var scale = 0.6 + Math.random() * 0.8;
+  // Scale variation — some props are bigger/smaller
+  var scale = 0.5 + Math.random() * 1.0;
   prop.scale.set(scale, scale, scale);
 
   prop.userData = { isEnvProp: true };
