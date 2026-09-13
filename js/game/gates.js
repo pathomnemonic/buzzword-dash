@@ -1,65 +1,88 @@
 /**
  * gates.js — Gate spawning, display, and encounter resolution
+ * Now includes custom cards in the selection pool.
  */
 
 import * as THREE from 'three';
 import { CARDS } from '../cards.js';
 import { storage } from '../storage.js';
-import { audio } from '../audio.js';
+import { customCards } from '../customcards.js';
 
-const LANE_X = [-3, 0, 3];
+var LANE_X = [-3, 0, 3];
 
 export function pickCard(recentIds, mode) {
-  const subjects = storage.get('selectedSubjects');
-  let pool = CARDS.filter(c => subjects.includes(c.subj));
+  var subjects = storage.get('selectedSubjects');
+
+  // Merge built-in cards with user-created custom cards
+  var allCards = CARDS.concat(customCards.getAll());
+
+  var pool = allCards.filter(function (c) {
+    return subjects.indexOf(c.subj) >= 0;
+  });
+
   if (mode === 'weakness') {
-    const weak = pool.filter(c => {
-      const s = storage.getCardStat(c.id);
+    var weak = pool.filter(function (c) {
+      var s = storage.getCardStat(c.id);
       return s.wrong > 0 || (s.seen > 0 && s.correct / s.seen < 0.7);
     });
     if (weak.length >= 3) pool = weak;
   }
+
   if (!pool.length) return null;
-  let weighted = pool.map(c => {
-    const s = storage.getCardStat(c.id);
-    let w = 10;
+
+  var weighted = pool.map(function (c) {
+    var s = storage.getCardStat(c.id);
+    var w = 10;
     if (s.seen > 0) {
-      const acc = s.correct / s.seen;
+      var acc = s.correct / s.seen;
       if (acc < 0.5) w *= 3;
       else if (acc > 0.9 && s.seen > 3) w *= 0.3;
     }
-    if (recentIds.includes(c.id)) w *= 0.05;
+    if (recentIds.indexOf(c.id) >= 0) w *= 0.05;
     return { card: c, weight: Math.max(w, 0.01) };
   });
-  const total = weighted.reduce((sum, x) => sum + x.weight, 0);
-  let r = Math.random() * total;
-  for (const x of weighted) { r -= x.weight; if (r <= 0) return x.card; }
+
+  var total = 0;
+  for (var i = 0; i < weighted.length; i++) total += weighted[i].weight;
+  var r = Math.random() * total;
+  for (var j = 0; j < weighted.length; j++) {
+    r -= weighted[j].weight;
+    if (r <= 0) return weighted[j].card;
+  }
   return weighted[weighted.length - 1].card;
 }
 
 export function spawnGates(scene, gates, currentLane, theme) {
-  const meshes = [];
-  for (let j = 0; j < 3; j++) {
-    const group = new THREE.Group();
-    // Gate frame — no text, just colored archway
-    const frame = new THREE.Mesh(
+  var meshes = [];
+  for (var j = 0; j < 3; j++) {
+    var group = new THREE.Group();
+    var frame = new THREE.Mesh(
       new THREE.BoxGeometry(2.8, 3, 0.2),
       new THREE.MeshBasicMaterial({
         color: j === currentLane ? 0x2244aa : 0x111833,
-        transparent: true, opacity: 0.7
+        transparent: true,
+        opacity: 0.7
       })
     );
     group.add(frame);
-    // Glow bars
-    const glowMat = new THREE.MeshBasicMaterial({ color: theme.glow || 0x18ffff, transparent: true, opacity: 0.35 });
-    const topBar = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.1, 0.2), glowMat);
-    topBar.position.y = 1.55; group.add(topBar);
-    const botBar = topBar.clone(); botBar.position.y = -1.55; group.add(botBar);
-    // Side pillars
-    for (const sx of [-1.45, 1.45]) {
-      const p = new THREE.Mesh(new THREE.BoxGeometry(0.12, 3, 0.2),
-        new THREE.MeshBasicMaterial({ color: theme.glow || 0x18ffff, transparent: true, opacity: 0.2 }));
-      p.position.x = sx; group.add(p);
+    var glowMat = new THREE.MeshBasicMaterial({
+      color: theme.glow || 0x18ffff,
+      transparent: true,
+      opacity: 0.35
+    });
+    var topBar = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.1, 0.2), glowMat);
+    topBar.position.set(0, 1.55, 0);
+    group.add(topBar);
+    var botBar = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.1, 0.2), glowMat);
+    botBar.position.set(0, -1.55, 0);
+    group.add(botBar);
+    for (var sx = -1; sx <= 1; sx += 2) {
+      var p = new THREE.Mesh(
+        new THREE.BoxGeometry(0.12, 3, 0.2),
+        new THREE.MeshBasicMaterial({ color: theme.glow || 0x18ffff, transparent: true, opacity: 0.2 })
+      );
+      p.position.set(sx * 1.45, 0, 0);
+      group.add(p);
     }
     group.position.set(LANE_X[j], 1.5, -60);
     scene.add(group);
@@ -69,8 +92,8 @@ export function spawnGates(scene, gates, currentLane, theme) {
 }
 
 export function updateGateHighlights(gateMeshes, currentLane) {
-  for (let i = 0; i < gateMeshes.length; i++) {
-    const frame = gateMeshes[i].children[0];
+  for (var i = 0; i < gateMeshes.length; i++) {
+    var frame = gateMeshes[i].children[0];
     if (i === currentLane) {
       frame.material.color.setHex(0x2244aa);
       frame.material.opacity = 0.8;
@@ -82,7 +105,7 @@ export function updateGateHighlights(gateMeshes, currentLane) {
 }
 
 export function flashGateResult(gateMeshes, gates, currentLane) {
-  for (let i = 0; i < gateMeshes.length; i++) {
+  for (var i = 0; i < gateMeshes.length; i++) {
     if (gates[i].correct) {
       gateMeshes[i].children[0].material.color.setHex(0x00cc55);
     } else if (i === currentLane) {
