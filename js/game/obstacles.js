@@ -1,23 +1,23 @@
 /**
  * obstacles.js — Obstacles, coins, and power-up collectibles
  *
- * Coins spawn continuously along the track in patterns.
- * Power-ups spawn as distinct colored 3D objects.
+ * Coins spawn continuously in patterns (lines, arcs, zigzags).
+ * Power-ups are distinct colored 3D objects on the track.
+ * Uses MeshBasicMaterial for guaranteed visibility without lighting.
  */
 
 import * as THREE from 'three';
 
-const LANE_X = [-3, 0, 3];
+var LANE_X = [-3, 0, 3];
 
 // ===== OBSTACLES =====
 
-export function spawnObstacle(scene, obstacleMeshes, theme) {
+export function spawnObstacle(scene, obstacleMeshes) {
   var lane = Math.floor(Math.random() * 3);
   var type = Math.random() < 0.5 ? 'high' : 'low';
   var g = new THREE.Group();
 
   if (type === 'high') {
-    // IV Pole — slide under
     var pole = new THREE.Mesh(
       new THREE.CylinderGeometry(0.04, 0.04, 3.2, 6),
       new THREE.MeshBasicMaterial({ color: 0x888899 })
@@ -31,14 +31,32 @@ export function spawnObstacle(scene, obstacleMeshes, theme) {
     );
     bar.position.set(0, 3, 0);
     g.add(bar);
+
+    var bag = new THREE.Mesh(
+      new THREE.BoxGeometry(0.3, 0.45, 0.12),
+      new THREE.MeshBasicMaterial({ color: 0x88ccff, transparent: true, opacity: 0.7 })
+    );
+    bag.position.set(0.5, 2.5, 0);
+    g.add(bag);
   } else {
-    // Gurney — jump over
     var bed = new THREE.Mesh(
       new THREE.BoxGeometry(2, 0.35, 1.1),
       new THREE.MeshBasicMaterial({ color: 0x44aa66 })
     );
     bed.position.set(0, 0.45, 0);
     g.add(bed);
+
+    for (var wx = -0.6; wx <= 0.6; wx += 1.2) {
+      for (var wz = -0.35; wz <= 0.35; wz += 0.7) {
+        var wheel = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.07, 0.07, 0.04, 6),
+          new THREE.MeshBasicMaterial({ color: 0x333344 })
+        );
+        wheel.position.set(wx, 0.1, wz);
+        wheel.rotation.z = Math.PI / 2;
+        g.add(wheel);
+      }
+    }
   }
 
   g.position.set(LANE_X[lane], 0, -50);
@@ -47,103 +65,107 @@ export function spawnObstacle(scene, obstacleMeshes, theme) {
   obstacleMeshes.push(g);
 }
 
-// ===== COINS =====
+// ===== SINGLE COIN =====
 
-export function spawnCoin(scene, coinMeshes, zPos) {
-  var lane = Math.floor(Math.random() * 3);
-  var z = zPos !== undefined ? zPos : (-30 - Math.random() * 25);
-
+function makeCoinMesh(lane, z, y) {
   var coin = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.3, 0.3, 0.09, 12),
+    new THREE.CylinderGeometry(0.28, 0.28, 0.08, 10),
     new THREE.MeshBasicMaterial({ color: 0xffd740 })
   );
-  coin.position.set(LANE_X[lane], 1.2, z);
+  coin.position.set(LANE_X[lane], y || 1.2, z);
   coin.rotation.x = Math.PI / 2;
   coin.userData = { lane: lane, collected: false, type: 'coin' };
-  scene.add(coin);
-  coinMeshes.push(coin);
+  return coin;
 }
 
-// Spawn a line of coins along one lane
-export function spawnCoinLine(scene, coinMeshes, lane, startZ, count) {
+// ===== COIN PATTERNS =====
+
+function spawnCoinLine(scene, coinMeshes, lane, startZ, count) {
   for (var i = 0; i < count; i++) {
-    var coin = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.3, 0.3, 0.09, 12),
-      new THREE.MeshBasicMaterial({ color: 0xffd740 })
-    );
-    coin.position.set(LANE_X[lane], 1.2, startZ - i * 2.5);
-    coin.rotation.x = Math.PI / 2;
-    coin.userData = { lane: lane, collected: false, type: 'coin' };
+    var coin = makeCoinMesh(lane, startZ - i * 2.5);
     scene.add(coin);
     coinMeshes.push(coin);
   }
 }
 
-// Spawn an arc of coins across lanes
-export function spawnCoinArc(scene, coinMeshes, startZ) {
+function spawnCoinArc(scene, coinMeshes, startZ) {
   var centerLane = Math.floor(Math.random() * 3);
-  for (var i = 0; i < 5; i++) {
-    var lane = Math.max(0, Math.min(2, centerLane + (i < 2 ? -1 : i > 2 ? 1 : 0)));
-    var yOffset = Math.sin(i / 4 * Math.PI) * 1.5;
-    var coin = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.3, 0.3, 0.09, 12),
-      new THREE.MeshBasicMaterial({ color: 0xffd740 })
-    );
-    coin.position.set(LANE_X[lane], 1.2 + yOffset, startZ - i * 2);
-    coin.rotation.x = Math.PI / 2;
-    coin.userData = { lane: lane, collected: false, type: 'coin' };
+  for (var i = 0; i < 6; i++) {
+    var lane;
+    if (i < 2) lane = Math.max(0, centerLane - 1);
+    else if (i > 3) lane = Math.min(2, centerLane + 1);
+    else lane = centerLane;
+    var yOffset = Math.sin(i / 5 * Math.PI) * 1.5;
+    var coin = makeCoinMesh(lane, startZ - i * 2, 1.2 + yOffset);
     scene.add(coin);
     coinMeshes.push(coin);
   }
 }
 
-// Spawn a big batch of coins in various patterns
-export function spawnCoinBatch(scene, coinMeshes, startZ) {
-  var pattern = Math.floor(Math.random() * 4);
-  var lane = Math.floor(Math.random() * 3);
+function spawnCoinZigzag(scene, coinMeshes, startZ) {
+  for (var i = 0; i < 9; i++) {
+    var lane = i % 3;
+    var coin = makeCoinMesh(lane, startZ - i * 2);
+    scene.add(coin);
+    coinMeshes.push(coin);
+  }
+}
 
-  if (pattern === 0) {
-    // Single lane line
-    spawnCoinLine(scene, coinMeshes, lane, startZ, 6 + Math.floor(Math.random() * 4));
-  } else if (pattern === 1) {
-    // Arc pattern
-    spawnCoinArc(scene, coinMeshes, startZ);
-  } else if (pattern === 2) {
-    // All three lanes
-    for (var l = 0; l < 3; l++) {
-      spawnCoinLine(scene, coinMeshes, l, startZ - l * 1.5, 4);
-    }
-  } else {
-    // Zigzag across lanes
-    for (var i = 0; i < 8; i++) {
-      var zigLane = i % 3;
-      var coin = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.3, 0.3, 0.09, 12),
-        new THREE.MeshBasicMaterial({ color: 0xffd740 })
-      );
-      coin.position.set(LANE_X[zigLane], 1.2, startZ - i * 2);
-      coin.rotation.x = Math.PI / 2;
-      coin.userData = { lane: zigLane, collected: false, type: 'coin' };
+function spawnCoinThreeLane(scene, coinMeshes, startZ) {
+  for (var l = 0; l < 3; l++) {
+    for (var i = 0; i < 4; i++) {
+      var coin = makeCoinMesh(l, startZ - i * 2.5 - l * 1.2);
       scene.add(coin);
       coinMeshes.push(coin);
     }
   }
 }
 
-// ===== POWER-UPS (physical 3D collectibles) =====
+function spawnCoinDiamond(scene, coinMeshes, startZ) {
+  var positions = [
+    [1, 0], [0, -2], [2, -2], [1, -4],
+    [0, -6], [2, -6], [1, -8]
+  ];
+  for (var i = 0; i < positions.length; i++) {
+    var lane = positions[i][0];
+    var z = startZ + positions[i][1];
+    var coin = makeCoinMesh(lane, z);
+    scene.add(coin);
+    coinMeshes.push(coin);
+  }
+}
+
+// Spawn a batch of coins in a random pattern
+export function spawnCoinBatch(scene, coinMeshes, startZ) {
+  var z = startZ || (-40 - Math.random() * 20);
+  var pattern = Math.floor(Math.random() * 5);
+
+  switch (pattern) {
+    case 0:
+      spawnCoinLine(scene, coinMeshes, Math.floor(Math.random() * 3), z, 6 + Math.floor(Math.random() * 4));
+      break;
+    case 1:
+      spawnCoinArc(scene, coinMeshes, z);
+      break;
+    case 2:
+      spawnCoinZigzag(scene, coinMeshes, z);
+      break;
+    case 3:
+      spawnCoinThreeLane(scene, coinMeshes, z);
+      break;
+    case 4:
+      spawnCoinDiamond(scene, coinMeshes, z);
+      break;
+  }
+}
+
+// ===== POWER-UP COLLECTIBLES =====
 
 var POWERUP_COLORS = {
   shield: 0x4488ff,
   slow: 0x44ffaa,
   double: 0xff44ff,
   magnet: 0xffaa00
-};
-
-var POWERUP_LABELS = {
-  shield: '🛡️',
-  slow: '💊',
-  double: '2×',
-  magnet: '🧲'
 };
 
 export function spawnPowerup(scene, coinMeshes) {
@@ -154,31 +176,42 @@ export function spawnPowerup(scene, coinMeshes) {
 
   var group = new THREE.Group();
 
-  // Outer glowing sphere
+  // Outer glow sphere
   var outer = new THREE.Mesh(
-    new THREE.SphereGeometry(0.5, 16, 16),
-    new THREE.MeshBasicMaterial({
-      color: color,
-      transparent: true,
-      opacity: 0.3
-    })
+    new THREE.SphereGeometry(0.55, 16, 16),
+    new THREE.MeshBasicMaterial({ color: color, transparent: true, opacity: 0.2 })
   );
   group.add(outer);
 
-  // Inner solid sphere
+  // Middle sphere
+  var mid = new THREE.Mesh(
+    new THREE.SphereGeometry(0.4, 12, 12),
+    new THREE.MeshBasicMaterial({ color: color, transparent: true, opacity: 0.4 })
+  );
+  group.add(mid);
+
+  // Inner solid core
   var inner = new THREE.Mesh(
-    new THREE.SphereGeometry(0.3, 12, 12),
+    new THREE.SphereGeometry(0.25, 10, 10),
     new THREE.MeshBasicMaterial({ color: color })
   );
   group.add(inner);
 
-  // Diamond shape on top for visibility
+  // Rotating diamond on top for visibility
   var diamond = new THREE.Mesh(
-    new THREE.OctahedronGeometry(0.2, 0),
+    new THREE.OctahedronGeometry(0.18, 0),
     new THREE.MeshBasicMaterial({ color: 0xffffff })
   );
-  diamond.position.set(0, 0.5, 0);
+  diamond.position.set(0, 0.55, 0);
   group.add(diamond);
+
+  // Small ring around it
+  var ring = new THREE.Mesh(
+    new THREE.TorusGeometry(0.45, 0.03, 8, 16),
+    new THREE.MeshBasicMaterial({ color: color, transparent: true, opacity: 0.5 })
+  );
+  ring.rotation.x = Math.PI / 2;
+  group.add(ring);
 
   group.position.set(LANE_X[lane], 1.5, -55);
   group.userData = {
@@ -189,5 +222,5 @@ export function spawnPowerup(scene, coinMeshes) {
   };
 
   scene.add(group);
-  coinMeshes.push(group); // goes into same array as coins for collision checking
+  coinMeshes.push(group);
 }
