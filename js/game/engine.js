@@ -1,11 +1,15 @@
 /**
  * engine.js — Main game class
  *
- * Changes in this version:
- * - Coins spawn continuously (coinSpawnTimer) not just between encounters
- * - Power-ups are physical 3D collectibles on the track
- * - TTS rate adapts to game speed
- * - No freeze after correct answers
+ * Includes all Phase 1-3 features:
+ * - Continuous coin spawning (coinSpawnTimer)
+ * - Physical power-up collectibles on track
+ * - No freeze after correct answers in endless mode
+ * - Speed dial 1-10, 1x = 3.75 u/s
+ * - TTS speed adapts to game speed
+ * - Streak milestone sounds
+ * - Camera shake on wrong answer
+ * - Answer-leak validation
  */
 
 import * as THREE from 'three';
@@ -70,18 +74,21 @@ class Game {
     this.runCards = [];
 
     this.obstacleMeshes = [];
-    this.coinMeshes = []; // coins AND power-ups live here
+    this.coinMeshes = [];
 
     this.feedbackTimer = 0;
     this.teachTimer = 0;
 
     this.powerups = { shield: 0, slow: 0, double: 0, magnet: 0 };
 
-    // Continuous spawning timers
     this.coinSpawnTimer = 0;
     this.powerupSpawnTimer = 0;
     this.waitingForNext = false;
     this.nextEncounterTimer = 0;
+
+    // Camera shake
+    this.shakeTimer = 0;
+    this.cameraBasePos = new THREE.Vector3(0, 4.5, 10);
 
     // Callbacks
     this.onEncounterStart = null;
@@ -100,7 +107,7 @@ class Game {
     this.scene.background = new THREE.Color(theme.bg);
 
     this.camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.1, 300);
-    this.camera.position.set(0, 4.5, 10);
+    this.camera.position.copy(this.cameraBasePos);
     this.camera.lookAt(0, 1, -20);
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -186,7 +193,7 @@ class Game {
     this.jumpVel = 0;
     this.legPhase = 0;
 
-    // Speed: 1-10 scale. 1 = 3.75 u/s, 10 = 37.5 u/s
+    // Speed: 1-10. Level 1 = 3.75 u/s, Level 10 = 37.5 u/s
     var mapped = 3.75 + (this.userSpeed - 1) * 3.75;
     this.speed = mode === 'study' ? 3 : mapped;
     this.baseSpeed = this.speed;
@@ -207,7 +214,8 @@ class Game {
     this.waitingForNext = false;
     this.nextEncounterTimer = 0;
     this.coinSpawnTimer = 0;
-    this.powerupSpawnTimer = 0;
+    this.powerupSpawnTimer = 8;
+    this.shakeTimer = 0;
     this.runCards = [];
     this.recentIds = [];
     this.feedbackTimer = 0;
@@ -222,6 +230,7 @@ class Game {
     this.cleanupObjects();
     var theme = getTheme(storage.get('selectedSubjects'));
     this.scene.background.set(theme.bg);
+    this.camera.position.copy(this.cameraBasePos);
     this.clock.getDelta();
     this.rebuildPlayer();
   }
@@ -241,6 +250,24 @@ class Game {
     this.obstacleMeshes = [];
     for (i = 0; i < this.coinMeshes.length; i++) this.scene.remove(this.coinMeshes[i]);
     this.coinMeshes = [];
+  }
+
+  collectPowerup(type) {
+    var duration;
+    switch (type) {
+      case 'shield': duration = 999; break;
+      case 'slow': duration = 8; break;
+      case 'double': duration = 15; break;
+      case 'magnet': duration = 10; break;
+      default: duration = 10;
+    }
+    this.powerups[type] = duration;
+    audio.play('powerup');
+    if (this.onPowerupCollected) this.onPowerupCollected(type);
+  }
+
+  triggerShake() {
+    this.shakeTimer = 0.15;
   }
 
   spawnEncounter() {
@@ -272,11 +299,8 @@ class Game {
     this.waitingForNext = false;
     document.getElementById('rushEl').classList.remove('show');
 
-    if (this.onEncounterStart) {
-      this.onEncounterStart(card, this.gates);
-    }
+    if (this.onEncounterStart) this.onEncounterStart(card, this.gates);
 
-    // TTS with speed-adaptive rate
     audio.speak(card.bw.join('. '), this.speed);
   }
 
@@ -292,23 +316,32 @@ class Game {
     this.encountersDone++;
     this.runCards.push({ card: card, ok: ok, choice: gate.label });
 
+    var pointsEarned = 0;
+
     if (ok) {
       this.correct++;
       this.streak++;
       if (this.streak > this.bestStreak) this.bestStreak = this.streak;
 
       var mult = this.powerups.double > 0 ? 2 : 1;
-      var pointsEarned = (10 + this.streak * 2) * this.multiplier * mult;
+      pointsEarned = (10 + this.streak * 2) * this.multiplier * mult;
       if (this.rushing) pointsEarned += this.rushBonus;
       pointsEarned += Math.floor(this.userSpeed * 3);
       this.score += pointsEarned;
       this.coins += 1 + Math.floor(this.streak / 3);
 
+      // Streak milestones
       if (this.streak % 5 === 0) {
         this.multiplier = Math.min(this.multiplier + 1, 8);
+        if (this.streak >= 10) {
+          audio.play('streak10');
+        } else {
+          audio.play('streak5');
+        }
+        if (this.onStreakMilestone) this.onStreakMilestone(this.streak, this.multiplier);
+      } else {
+        audio.play('correct');
       }
-
-      audio.play('correct');
       audio.play('coin');
 
       for (var i = 0; i < this.gateMeshes.length; i++) {
@@ -319,6 +352,7 @@ class Game {
 
       storage.incrementQuest('q_10correct');
       if (this.onScorePopup) this.onScorePopup(pointsEarned);
+
     } else {
       this.wrong++;
       this.streak = 0;
@@ -327,6 +361,7 @@ class Game {
 
       audio.play('wrong');
       flashGateResult(this.gateMeshes, this.gates, this.currentLane);
+      this.triggerShake();
 
       if (this.lives <= 0 && this.mode !== 'study') {
         this.feedbackTimer = 1.5;
@@ -339,7 +374,6 @@ class Game {
 
     this.feedbackTimer = 1.2;
 
-    // No freeze for correct in endless — instant next encounter
     if (this.mode === 'study') {
       this.teachTimer = 3.5;
       this.waitingForNext = true;
@@ -349,7 +383,6 @@ class Game {
       this.waitingForNext = true;
       this.nextEncounterTimer = 1.0;
     } else {
-      // CORRECT in endless/daily: near-instant
       this.waitingForNext = true;
       this.nextEncounterTimer = 0.05;
     }
@@ -371,14 +404,6 @@ class Game {
     }
 
     this.spawnEncounter();
-  }
-
-  // Handle collecting a power-up
-  collectPowerup(type) {
-    var duration = type === 'shield' ? 999 : (type === 'slow' ? 8 : (type === 'double' ? 15 : 10));
-    this.powerups[type] = duration;
-    audio.play('powerup');
-    if (this.onPowerupCollected) this.onPowerupCollected(type);
   }
 
   update(dt) {
@@ -426,6 +451,17 @@ class Game {
       this.playerGroup.position.y = this.playerY + Math.abs(Math.sin(this.legPhase)) * 0.04;
     }
 
+    // Camera shake
+    if (this.shakeTimer > 0) {
+      this.shakeTimer -= dt;
+      var intensity = this.shakeTimer * 3;
+      this.camera.position.x = this.cameraBasePos.x + (Math.random() - 0.5) * intensity;
+      this.camera.position.y = this.cameraBasePos.y + (Math.random() - 0.5) * intensity * 0.5;
+    } else {
+      this.camera.position.x = this.cameraBasePos.x;
+      this.camera.position.y = this.cameraBasePos.y;
+    }
+
     // Gates
     if (this.gatesActive) {
       this.gateZ += move;
@@ -445,15 +481,14 @@ class Game {
       }
     }
 
-    // ===== CONTINUOUS COIN SPAWNING =====
+    // Continuous coin spawning
     this.coinSpawnTimer -= dt;
     if (this.coinSpawnTimer <= 0) {
-      spawnCoinBatch(this.scene, this.coinMeshes, -55 - Math.random() * 15);
-      // Spawn every 1-2 seconds depending on speed
-      this.coinSpawnTimer = 1.0 + Math.random() * 1.0;
+      spawnCoinBatch(this.scene, this.coinMeshes);
+      this.coinSpawnTimer = 0.8 + Math.random() * 1.2;
     }
 
-    // ===== POWER-UP SPAWNING (every 15-25 seconds) =====
+    // Power-up spawning
     this.powerupSpawnTimer -= dt;
     if (this.powerupSpawnTimer <= 0) {
       spawnPowerup(this.scene, this.coinMeshes);
@@ -474,6 +509,7 @@ class Game {
             } else {
               this.lives--;
               audio.play('wrong');
+              this.triggerShake();
               if (this.lives <= 0 && this.mode !== 'study') this.endRun();
             }
           }
@@ -483,45 +519,33 @@ class Game {
       }
     }
 
-    // Coins AND Power-ups (both in coinMeshes array)
+    // Coins and power-ups
     for (var ci = this.coinMeshes.length - 1; ci >= 0; ci--) {
       var c = this.coinMeshes[ci];
       c.position.z += move;
 
-      // Rotate coins and power-ups
+      // Animate
       if (c.userData.type === 'coin') {
         c.rotation.y += dt * 3;
       } else if (c.userData.type === 'powerup') {
-        // Power-ups bob up and down and rotate
         c.rotation.y += dt * 2;
         c.position.y = 1.5 + Math.sin(Date.now() * 0.003 + ci) * 0.3;
       }
 
-      if (c.position.z > 1) {
-        var inLane = c.userData.lane === this.currentLane;
-        var magnetActive = this.powerups.magnet > 0;
-
-        if ((inLane || magnetActive) && !c.userData.collected) {
-          c.userData.collected = true;
-
-          if (c.userData.type === 'powerup') {
-            // Collect power-up
-            this.collectPowerup(c.userData.powerupType);
-          } else {
-            // Collect coin
-            this.coins++;
-            audio.play('coin');
-          }
-        }
-
+      // Remove if past player
+      if (c.position.z > 3) {
         this.scene.remove(c);
         this.coinMeshes.splice(ci, 1);
-      } else if (c.position.z > -5 && c.position.z < 3) {
-        // Check collection a bit earlier for better feel
-        var closeEnough = Math.abs(LANE_X[this.currentLane] - c.position.x) < 1.5;
-        var magnetPull = this.powerups.magnet > 0;
+        continue;
+      }
 
-        if ((closeEnough || magnetPull) && !c.userData.collected) {
+      // Collection check (generous zone)
+      if (c.position.z > -3 && c.position.z < 2 && !c.userData.collected) {
+        var inLane = c.userData.lane === this.currentLane;
+        var magnetActive = this.powerups.magnet > 0;
+        var closeEnough = Math.abs(LANE_X[this.currentLane] - c.position.x) < 1.8;
+
+        if ((inLane || closeEnough || magnetActive)) {
           c.userData.collected = true;
 
           if (c.userData.type === 'powerup') {
@@ -573,6 +597,7 @@ class Game {
     this.paused = false;
     document.getElementById('pauseOverlay').classList.remove('active');
     document.getElementById('rushEl').classList.remove('show');
+    this.camera.position.copy(this.cameraBasePos);
 
     storage.set('coins', storage.get('coins') + this.coins);
     if (this.score > storage.get('bestScore')) storage.set('bestScore', this.score);
