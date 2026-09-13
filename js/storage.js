@@ -1,13 +1,15 @@
 /**
  * storage.js — LocalStorage persistence layer
- * 
- * All game state is saved here: coins, scores, settings,
- * per-card stats, subject selections, equipped cosmetics, etc.
+ *
+ * Updated defaults for Phase 3.5:
+ * - equipped.trail slot added
+ * - equipped.skin defaults to avatar_intern
+ * - ownedItems includes avatar_intern and trail_none
  */
 
-const STORAGE_KEY = 'buzzword_dash_v1';
+var STORAGE_KEY = 'buzzword_dash_v1';
 
-const DEFAULTS = {
+var DEFAULTS = {
   coins: 100,
   bestScore: 0,
   bestStreak: 0,
@@ -17,14 +19,10 @@ const DEFAULTS = {
   dailyStreak: 0,
   dailyDone: false,
   lastDaily: null,
-
-  // Subjects — first 6 selected by default
   selectedSubjects: [
     "Neurology", "Cardiology", "Nephrology",
     "Psychiatry", "Gastroenterology", "Infectious Disease"
   ],
-
-  // Settings
   userSpeed: 1,
   masterVolume: 0.7,
   sfxVolume: 0.8,
@@ -33,24 +31,16 @@ const DEFAULTS = {
   ttsEnabled: false,
   ttsRate: 1.0,
   reducedMotion: false,
-
-  // Per-card stats: { cardId: { seen, correct, wrong } }
   cardStats: {},
-  // Per-subject stats: { subject: { correct, wrong } }
   subjectStats: {},
-
-  // Shop
-  ownedItems: ["skin_scrubs", "hat_none", "gear_none"],
+  ownedItems: ["avatar_intern", "hat_none", "trail_none", "gear_none"],
   equipped: {
-    skin: "skin_scrubs",
+    skin: "avatar_intern",
     hat: "hat_none",
+    trail: "trail_none",
     gear: "gear_none"
   },
-
-  // Quest progress: { questId: count }
   questProgress: {},
-
-  // Flagged cards
   flags: []
 };
 
@@ -61,19 +51,44 @@ class Storage {
 
   load() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      this.data = raw ? { ...DEFAULTS, ...JSON.parse(raw) } : { ...DEFAULTS };
+      var raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        var parsed = JSON.parse(raw);
+        // Merge with defaults to add any new fields
+        this.data = {};
+        for (var key in DEFAULTS) {
+          if (parsed[key] !== undefined) {
+            this.data[key] = parsed[key];
+          } else {
+            this.data[key] = DEFAULTS[key];
+          }
+        }
+        // Ensure equipped has trail slot
+        if (!this.data.equipped.trail) {
+          this.data.equipped.trail = 'trail_none';
+        }
+      } else {
+        this.data = {};
+        for (var k in DEFAULTS) {
+          this.data[k] = typeof DEFAULTS[k] === 'object' && DEFAULTS[k] !== null
+            ? JSON.parse(JSON.stringify(DEFAULTS[k]))
+            : DEFAULTS[k];
+        }
+      }
     } catch (e) {
-      this.data = { ...DEFAULTS };
+      this.data = {};
+      for (var d in DEFAULTS) {
+        this.data[d] = typeof DEFAULTS[d] === 'object' && DEFAULTS[d] !== null
+          ? JSON.parse(JSON.stringify(DEFAULTS[d]))
+          : DEFAULTS[d];
+      }
     }
   }
 
   save() {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.data));
-    } catch (e) {
-      // localStorage unavailable — fail silently
-    }
+    } catch (e) { /* fail silently */ }
   }
 
   get(key) {
@@ -87,15 +102,14 @@ class Storage {
     this.save();
   }
 
-  // --- Card stats ---
   getCardStat(cardId) {
-    const stats = this.get('cardStats');
+    var stats = this.get('cardStats');
     return stats[cardId] || { seen: 0, correct: 0, wrong: 0 };
   }
 
   updateCardStat(cardId, wasCorrect) {
-    const stats = this.get('cardStats');
-    const s = stats[cardId] || { seen: 0, correct: 0, wrong: 0 };
+    var stats = this.get('cardStats');
+    var s = stats[cardId] || { seen: 0, correct: 0, wrong: 0 };
     s.seen++;
     if (wasCorrect) s.correct++;
     else s.wrong++;
@@ -103,70 +117,69 @@ class Storage {
     this.set('cardStats', stats);
   }
 
-  // --- Subject stats ---
   getSubjectStat(subject) {
-    const stats = this.get('subjectStats');
+    var stats = this.get('subjectStats');
     return stats[subject] || { correct: 0, wrong: 0 };
   }
 
   updateSubjectStat(subject, wasCorrect) {
-    const stats = this.get('subjectStats');
-    const s = stats[subject] || { correct: 0, wrong: 0 };
+    var stats = this.get('subjectStats');
+    var s = stats[subject] || { correct: 0, wrong: 0 };
     if (wasCorrect) s.correct++;
     else s.wrong++;
     stats[subject] = s;
     this.set('subjectStats', stats);
   }
 
-  // --- Shop ---
   ownsItem(itemId) {
-    return this.get('ownedItems').includes(itemId);
+    return this.get('ownedItems').indexOf(itemId) >= 0;
   }
 
   buyItem(itemId, price) {
-    const coins = this.get('coins');
+    var coins = this.get('coins');
     if (coins < price) return false;
     this.set('coins', coins - price);
-    const owned = this.get('ownedItems');
+    var owned = this.get('ownedItems');
     owned.push(itemId);
     this.set('ownedItems', owned);
     return true;
   }
 
   equipItem(itemId, slot) {
-    const eq = this.get('equipped');
+    var eq = this.get('equipped');
     eq[slot] = itemId;
     this.set('equipped', eq);
   }
 
-  // --- Quest progress ---
   getQuestProgress(questId) {
-    const p = this.get('questProgress');
+    var p = this.get('questProgress');
     return p[questId] || 0;
   }
 
   incrementQuest(questId, amount) {
-    const p = this.get('questProgress');
+    var p = this.get('questProgress');
     p[questId] = (p[questId] || 0) + (amount || 1);
     this.set('questProgress', p);
   }
 
-  // --- Daily check ---
   checkDailyReset() {
-    const last = this.get('lastDaily');
-    const today = new Date().toDateString();
+    var last = this.get('lastDaily');
+    var today = new Date().toDateString();
     if (last !== today) {
       this.set('dailyDone', false);
       this.set('questProgress', {});
     }
   }
 
-  // --- Full reset ---
   reset() {
-    this.data = { ...DEFAULTS };
+    this.data = {};
+    for (var k in DEFAULTS) {
+      this.data[k] = typeof DEFAULTS[k] === 'object' && DEFAULTS[k] !== null
+        ? JSON.parse(JSON.stringify(DEFAULTS[k]))
+        : DEFAULTS[k];
+    }
     this.save();
   }
 }
 
-// Export singleton
-export const storage = new Storage();
+export var storage = new Storage();
