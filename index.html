@@ -52,6 +52,24 @@
   <button class="btn btn-outline btn-block" id="endRunBtn">🏠 End Run</button>
 </div>
 
+<!-- Continue overlay -->
+<div id="continueOverlay">
+  <div class="continue-box">
+    <h2>💀 Out of Lives!</h2>
+    <p class="continue-desc">Continue your run?</p>
+    <div class="continue-cost-row">
+      <span class="continue-cost-label">Cost:</span>
+      <span class="continue-cost-amount">🪙 <span id="continueCost">50</span></span>
+    </div>
+    <div class="continue-cost-row">
+      <span class="continue-cost-label">Your coins:</span>
+      <span class="continue-coins-amount">🪙 <span id="continueCoins">0</span></span>
+    </div>
+    <button class="btn btn-green btn-block" id="continueYesBtn">💚 Continue!</button>
+    <button class="btn btn-outline btn-block" id="continueNoBtn" style="margin-top:6px">End Run</button>
+  </div>
+</div>
+
 <!-- Tutorial overlay -->
 <div class="tutorial-overlay" id="tutorialOverlay">
   <div class="tut-page" id="tutPage"></div>
@@ -124,7 +142,10 @@
       <button class="btn btn-outline btn-sm" id="myCardsBtn" style="flex:1">📝 My Cards</button>
     </div>
 
-    <button class="btn btn-outline btn-sm btn-block" id="settingsBtn" style="margin-top:6px">⚙ Settings</button>
+    <div style="display:flex;gap:6px;margin-top:6px">
+      <button class="btn btn-outline btn-sm" id="achievementsBtn" style="flex:1">🏆 Achievements</button>
+      <button class="btn btn-outline btn-sm" id="settingsBtn" style="flex:1">⚙ Settings</button>
+    </div>
   </div>
   <div class="bottom-nav">
     <div class="nav-item active" data-screen="screenHome"><span class="nav-icon">🏠</span>Home</div>
@@ -158,6 +179,15 @@
   <div class="screen-scroll">
     <h2 style="margin-bottom:14px">📋 Daily Quests</h2>
     <div id="questList"></div>
+    <button class="btn btn-outline btn-block back-btn" style="margin-top:14px">← Back</button>
+  </div>
+</div>
+
+<!-- ACHIEVEMENTS -->
+<div class="screen" id="screenAchievements">
+  <div class="screen-scroll">
+    <h2 style="margin-bottom:14px">🏆 Achievements</h2>
+    <div id="achievementsList"></div>
     <button class="btn btn-outline btn-block back-btn" style="margin-top:14px">← Back</button>
   </div>
 </div>
