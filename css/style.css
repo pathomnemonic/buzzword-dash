@@ -828,3 +828,113 @@ html, body {
   .play-icon { font-size: 50px; }
   .play-label { font-size: 20px; }
 }
+/* ==================================================================
+   FALLBACK FOR BROWSERS WITHOUT BACKDROP-FILTER SUPPORT
+   Without this, screens are fully transparent and content is
+   unreadable on desktops where backdrop-filter may not work.
+   The @supports block only applies the transparent background
+   when backdrop-filter is confirmed to work.
+   ================================================================== */
+
+/* Default: solid fallback background for ALL screens */
+.screen-scroll::before {
+    content: '';
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    z-index: -1;
+    pointer-events: none;
+    /* Solid fallback — readable on any browser */
+    background: rgba(20, 10, 60, 0.92);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+}
+
+/* If backdrop-filter IS supported, use glassmorphism */
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+    .screen-scroll::before {
+        background: var(--bg-panel);
+        backdrop-filter: blur(var(--glass-blur));
+        -webkit-backdrop-filter: blur(var(--glass-blur));
+    }
+}
+
+/* Fix for bottom nav on unsupported browsers */
+.bottom-nav {
+    background: rgba(20, 10, 55, 0.95);
+}
+
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+    .bottom-nav {
+        background: var(--bg-nav);
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+    }
+}
+
+/* Fix for HUD pills on unsupported browsers */
+.hud-pill {
+    background: rgba(10, 5, 30, 0.92);
+}
+
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+    .hud-pill {
+        background: rgba(10, 5, 30, 0.85);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+    }
+}
+
+/* Fix for card elements showing white boxes */
+.stat-pill,
+.mode-btn,
+.speed-dial,
+.collapsible-toggle,
+.subject-chip,
+.shop-item,
+.quest-item,
+.achievement-item,
+.streak-calendar,
+.quick-review-card,
+.continue-box,
+.mp-panel {
+    background: rgba(40, 20, 80, 0.85);
+}
+
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+    .stat-pill,
+    .mode-btn,
+    .speed-dial,
+    .collapsible-toggle,
+    .subject-chip,
+    .shop-item,
+    .quest-item,
+    .achievement-item,
+    .streak-calendar,
+    .quick-review-card,
+    .continue-box,
+    .mp-panel {
+        background: var(--grad-card);
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
+    }
+}
+
+/* Ensure buttons always have visible backgrounds regardless of browser */
+.btn-primary { background: linear-gradient(135deg, #44aaff, #bb66ff); }
+.btn-green, .btn-play { background: linear-gradient(135deg, #00ff88, #00cc66); }
+.btn-gold { background: linear-gradient(135deg, #ffee44, #ffaa00); }
+.btn-red { background: linear-gradient(135deg, #ff5566, #dd0033); }
+.btn-outline {
+    background: rgba(100, 50, 180, 0.25);
+    border: 2px solid rgba(187, 102, 255, 0.4);
+}
+
+/* Fix form inputs showing as white boxes on desktop */
+.card-form input,
+.card-form textarea,
+.card-form select,
+.import-export-area {
+    background: rgba(30, 15, 70, 0.85);
+    color: #ffffff;
+}
