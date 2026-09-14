@@ -17,18 +17,21 @@
 </head>
 <body>
 
-<!-- Three.js game renders here -->
+<!-- ==================== 3D CANVAS (fullscreen, always behind UI) ==================== -->
 <div id="gameContainer"></div>
 
-<!-- NEW: Rush vignette overlay (Item 11) -->
+<!-- ==================== RUSH VIGNETTE ==================== -->
 <div id="rushVignette" class="rush-vignette"></div>
 
-<!-- Track name overlay (shown briefly at run start) -->
+<!-- ==================== TRACK NAME OVERLAY ==================== -->
 <div id="trackNameOverlay">
   <div id="trackNameText"></div>
 </div>
 
-<!-- HUD overlay -->
+<!-- ==================== REVENGE CARD BANNER ==================== -->
+<div id="revengeCardBanner">🔥 REVENGE CARD!</div>
+
+<!-- ==================== HUD (gameplay only) ==================== -->
 <div id="hud" class="off">
   <div class="hud-row">
     <div class="hud-pill">🪙 <span id="hudCoins">0</span></div>
@@ -36,7 +39,6 @@
     <div class="hud-pill">🔥 <span id="hudStreak">0</span></div>
     <div class="hud-pill">× <span id="hudMulti">1</span></div>
     <div class="hud-pill">❤️ <span id="hudLives">3</span></div>
-    <!-- NEW: Speed timer HUD element (Item 16) -->
     <div class="hud-pill" id="hudSpeedTimer" style="display:none">⏱ 0.00s</div>
     <div class="hud-pill clickable" id="pauseBtn">⏸</div>
   </div>
@@ -52,17 +54,17 @@
   <div class="powerup-row" id="powerupRow"></div>
 </div>
 
-<!-- Countdown overlay -->
+<!-- ==================== COUNTDOWN ==================== -->
 <div id="countdownOverlay"><div id="countdownNum">3</div></div>
 
-<!-- Pause overlay -->
+<!-- ==================== PAUSE ==================== -->
 <div id="pauseOverlay">
   <h2>⏸ PAUSED</h2>
   <button class="btn btn-primary btn-block" id="resumeBtn">▶ Resume</button>
   <button class="btn btn-outline btn-block" id="endRunBtn">🏠 End Run</button>
 </div>
 
-<!-- Continue overlay -->
+<!-- ==================== CONTINUE ==================== -->
 <div id="continueOverlay">
   <div class="continue-box">
     <h2>💀 Out of Lives!</h2>
@@ -80,7 +82,19 @@
   </div>
 </div>
 
-<!-- Tutorial overlay -->
+<!-- ==================== ONBOARDING (first run only) ==================== -->
+<div id="onboardingOverlay">
+  <div class="onboarding-card" id="onboardingCard">
+    <span class="ob-icon" id="obIcon">⚡</span>
+    <h2 id="obTitle">Welcome to Buzzword Dash!</h2>
+    <p id="obText">Swipe into the correct diagnosis gate to score points!</p>
+    <div class="onboarding-hand" id="obHand">👆</div>
+    <div class="tut-dots" id="obDots"></div>
+    <button class="btn btn-primary" id="obNextBtn" style="margin-top:12px">Next →</button>
+  </div>
+</div>
+
+<!-- ==================== TUTORIAL ==================== -->
 <div class="tutorial-overlay" id="tutorialOverlay">
   <div class="tut-page" id="tutPage"></div>
   <div class="tut-dots" id="tutDots"></div>
@@ -90,95 +104,129 @@
   </div>
 </div>
 
-<!-- ==================== SCREENS ==================== -->
+<!-- ==================== QUICK REVIEW ==================== -->
+<div id="quickReviewOverlay">
+  <div class="quick-review-card">
+    <div class="qr-counter" id="qrCounter">1 / 5</div>
+    <div class="qr-buzzwords" id="qrBuzzwords"></div>
+    <div class="qr-divider" id="qrDivider" style="display:none">
+      <div class="qr-answer" id="qrAnswer"></div>
+      <div class="qr-teaching" id="qrTeaching"></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button class="btn btn-primary" id="qrRevealBtn" style="flex:1">Reveal Answer</button>
+      <button class="btn btn-outline" id="qrNextBtn" style="flex:1;display:none">Next Card →</button>
+    </div>
+    <button class="btn btn-outline btn-block" id="qrCloseBtn" style="margin-top:8px">✕ Close Review</button>
+  </div>
+</div>
 
-<!-- HOME -->
+<!-- ==================== MULTIPLAYER ==================== -->
+<div id="multiplayerOverlay" style="display:none">
+  <div class="mp-panel" style="max-width:380px;width:100%">
+    <h3 id="mpTitle">🎮 Multiplayer</h3>
+    <div id="mpContent"></div>
+    <button class="btn btn-outline btn-block" id="mpCloseBtn" style="margin-top:10px">✕ Close</button>
+  </div>
+</div>
+
+<!-- ====================================================================
+     SCREENS — All transparent, floating over the 3D canvas.
+     Bottom nav is OUTSIDE all screens so it persists everywhere.
+     ==================================================================== -->
+
+<!-- ==================== HOME ==================== -->
 <div class="screen active" id="screenHome">
   <div class="screen-scroll">
+
+    <!-- Header with inline coin count -->
     <div class="home-header">
       <h1>⚡ Buzzword Dash</h1>
       <p>USMLE & COMLEX Board Runner</p>
+      <div class="home-coins" id="homeCoinsDisplay">🪙 <span id="homeCoins">100</span> &nbsp;|&nbsp; 🏆 <span id="homeBest">0</span></div>
     </div>
 
-    <!-- NEW: Home character preview container (Item 3) -->
-    <div id="homeCharacterContainer"></div>
+    <!-- ===== PRIMARY ACTION: Giant PLAY button ===== -->
+    <div class="play-section">
+      <button class="btn-play" data-mode="endless">
+        <span class="play-icon">▶</span>
+        <span class="play-label">PLAY</span>
+      </button>
+    </div>
 
-    <div class="stat-row" id="homeStats"></div>
-    <div class="save-indicator">💾 Progress auto-saved</div>
+    <!-- ===== SECONDARY MODES: smaller row ===== -->
+    <div class="mode-row">
+      <button class="mode-btn" data-mode="study">
+        <span class="mode-btn-icon">📖</span>
+        <span class="mode-btn-label">Study</span>
+      </button>
+      <button class="mode-btn" data-mode="weakness">
+        <span class="mode-btn-icon">🎯</span>
+        <span class="mode-btn-label">Weakness</span>
+      </button>
+      <button class="mode-btn" data-mode="daily">
+        <span class="mode-btn-icon">📅</span>
+        <span class="mode-btn-label">Daily</span>
+      </button>
+      <button class="mode-btn" id="multiplayerBtn">
+        <span class="mode-btn-icon">🎮</span>
+        <span class="mode-btn-label">Versus</span>
+      </button>
+    </div>
 
+    <!-- ===== SUBJECTS: collapsed by default ===== -->
+    <div class="collapsible-section">
+      <button class="collapsible-toggle" id="subjectToggle">
+        📚 Subjects <span class="collapse-arrow" id="subjectArrow">▸</span>
+      </button>
+      <div class="collapsible-body" id="subjectBody" style="display:none">
+        <div class="subject-controls">
+          <button class="btn btn-outline btn-sm" id="selectAllSubjects">Select All</button>
+          <button class="btn btn-outline btn-sm" id="deselectAllSubjects">Deselect All</button>
+        </div>
+        <div class="subject-scroll" id="subjectScroll"></div>
+      </div>
+    </div>
+
+    <!-- ===== SPEED DIAL ===== -->
     <div class="speed-dial">
       <label>🏎️ Speed</label>
       <input type="range" id="speedDial" min="1" max="10" step="1" value="1">
       <div class="speed-value" id="speedValue">1×</div>
     </div>
 
-    <div style="text-align:center;margin:6px 0">
-      <button class="btn btn-outline btn-sm" id="tutorialBtn">❓ How to Play</button>
-      <button class="btn btn-outline btn-sm" id="musicToggleBtn">🎵 Music: OFF</button>
+    <!-- ===== STUDY STREAK CALENDAR ===== -->
+    <div class="streak-calendar" id="streakCalendar">
+      <h4>📅 Study Streak</h4>
+      <div class="calendar-day-labels">
+        <span>S</span><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span>
+      </div>
+      <div class="calendar-grid" id="calendarGrid"></div>
     </div>
 
-    <div class="mode-grid">
-      <div class="mode-card" data-mode="endless">
-        <div class="mode-icon">🏃</div>
-        <div class="mode-name">Endless Run</div>
-        <div class="mode-desc">Arcade!</div>
-      </div>
-      <div class="mode-card" data-mode="study">
-        <div class="mode-icon">📖</div>
-        <div class="mode-name">Study Mode</div>
-        <div class="mode-desc">No pressure</div>
-      </div>
-      <div class="mode-card" data-mode="weakness">
-        <div class="mode-icon">🎯</div>
-        <div class="mode-name">Weakness</div>
-        <div class="mode-desc">Weak spots</div>
-      </div>
-      <div class="mode-card" data-mode="daily">
-        <div class="mode-icon">📅</div>
-        <div class="mode-name">Daily Round</div>
-        <div class="mode-desc">15 cards</div>
-      </div>
-    </div>
-
-    <div class="subject-section">
-      <h3>📚 Subjects</h3>
-      <div class="subject-controls">
-        <button class="btn btn-outline btn-sm" id="selectAllSubjects">Select All</button>
-        <button class="btn btn-outline btn-sm" id="deselectAllSubjects">Deselect All</button>
-      </div>
-      <div class="subject-scroll" id="subjectScroll"></div>
-      <p style="font-size:10px;color:var(--text-muted);margin-top:4px">💡 Tap to toggle. Long-press to select <em>only</em> that subject.</p>
-    </div>
-
+    <!-- ===== UTILITY BUTTONS ===== -->
     <div style="display:flex;gap:6px;margin-top:10px">
       <button class="btn btn-gold btn-sm" id="shopBtn" style="flex:1">🧥 Locker</button>
       <button class="btn btn-outline btn-sm" id="questBtn" style="flex:1">📋 Quests</button>
       <button class="btn btn-outline btn-sm" id="myCardsBtn" style="flex:1">📝 My Cards</button>
     </div>
-
     <div style="display:flex;gap:6px;margin-top:6px">
-      <button class="btn btn-outline btn-sm" id="achievementsBtn" style="flex:1">🏆 Achievements</button>
+      <button class="btn btn-outline btn-sm" id="achievementsBtn" style="flex:1">🏆 Badges</button>
       <button class="btn btn-outline btn-sm" id="settingsBtn" style="flex:1">⚙ Settings</button>
     </div>
-  </div>
-  <div class="bottom-nav">
-    <div class="nav-item active" data-screen="screenHome"><span class="nav-icon">🏠</span>Home</div>
-    <div class="nav-item" data-screen="screenStats"><span class="nav-icon">📊</span>Stats</div>
-    <div class="nav-item" data-screen="screenShop"><span class="nav-icon">🧥</span>Locker</div>
-    <div class="nav-item" data-screen="screenSettings"><span class="nav-icon">⚙</span>Settings</div>
+
   </div>
 </div>
 
-<!-- STATS -->
+<!-- ==================== STATS ==================== -->
 <div class="screen" id="screenStats">
   <div class="screen-scroll">
     <h2 style="margin-bottom:14px">📊 Performance</h2>
     <div id="statsContent"></div>
-    <button class="btn btn-outline btn-block back-btn" style="margin-top:14px">← Back</button>
   </div>
 </div>
 
-<!-- SHOP (with character preview) -->
+<!-- ==================== SHOP (with character preview) ==================== -->
 <div class="screen" id="screenShop">
   <div class="screen-scroll">
     <h2 style="margin-bottom:4px">🧥 On-Call Locker</h2>
@@ -186,38 +234,34 @@
     <div id="characterPreviewContainer"></div>
     <p style="font-size:10px;color:var(--text-muted);text-align:center;margin-bottom:10px">Drag to rotate • Tap 👁 to try on</p>
     <div id="shopItems"></div>
-    <button class="btn btn-outline btn-block back-btn" style="margin-top:14px">← Back</button>
   </div>
 </div>
 
-<!-- QUESTS -->
+<!-- ==================== QUESTS ==================== -->
 <div class="screen" id="screenQuests">
   <div class="screen-scroll">
     <h2 style="margin-bottom:14px">📋 Daily Quests</h2>
     <div id="questList"></div>
-    <button class="btn btn-outline btn-block back-btn" style="margin-top:14px">← Back</button>
   </div>
 </div>
 
-<!-- ACHIEVEMENTS -->
+<!-- ==================== ACHIEVEMENTS ==================== -->
 <div class="screen" id="screenAchievements">
   <div class="screen-scroll">
     <h2 style="margin-bottom:14px">🏆 Achievements</h2>
     <div id="achievementsList"></div>
-    <button class="btn btn-outline btn-block back-btn" style="margin-top:14px">← Back</button>
   </div>
 </div>
 
-<!-- SETTINGS -->
+<!-- ==================== SETTINGS ==================== -->
 <div class="screen" id="screenSettings">
   <div class="screen-scroll">
     <h2 style="margin-bottom:14px">⚙ Settings</h2>
     <div id="settingsContent"></div>
-    <button class="btn btn-outline btn-block back-btn" style="margin-top:14px">← Back</button>
   </div>
 </div>
 
-<!-- MY CARDS -->
+<!-- ==================== MY CARDS ==================== -->
 <div class="screen" id="screenMyCards">
   <div class="screen-scroll">
     <h2 style="margin-bottom:4px">📝 My Cards</h2>
@@ -228,11 +272,10 @@
       <button class="btn btn-outline btn-sm" id="exportCardsBtn" style="flex:1">📤 Export</button>
       <button class="btn btn-outline btn-sm" id="importCardsBtn" style="flex:1">📥 Import</button>
     </div>
-    <button class="btn btn-outline btn-block back-btn" style="margin-top:14px">← Back</button>
   </div>
 </div>
 
-<!-- CARD EDITOR -->
+<!-- ==================== CARD EDITOR ==================== -->
 <div class="screen" id="screenCardEditor">
   <div class="screen-scroll">
     <h2 id="cardEditorTitle" style="margin-bottom:14px">📝 Create Card</h2>
@@ -266,25 +309,35 @@
   </div>
 </div>
 
-<!-- IMPORT/EXPORT -->
+<!-- ==================== IMPORT/EXPORT ==================== -->
 <div class="screen" id="screenImportExport">
   <div class="screen-scroll">
     <h2 id="importExportTitle" style="margin-bottom:14px">📤 Export Cards</h2>
     <textarea id="importExportArea" rows="12" class="import-export-area"></textarea>
     <div id="importExportMsg" style="font-size:12px;margin:8px 0"></div>
     <button class="btn btn-primary btn-block" id="importExportAction" style="margin-top:8px">Copy</button>
-    <button class="btn btn-outline btn-block back-btn" style="margin-top:6px">← Back</button>
   </div>
 </div>
 
-<!-- POST-RUN -->
+<!-- ==================== POST-RUN ==================== -->
 <div class="screen" id="screenPostRun">
   <div class="screen-scroll">
     <div id="postRunContent"></div>
   </div>
 </div>
 
-<!-- Load game modules -->
+<!-- ====================================================================
+     PERSISTENT BOTTOM NAV — Outside all screens, always visible
+     except during gameplay (hidden by JS when game.running)
+     ==================================================================== -->
+<div class="bottom-nav" id="bottomNav">
+  <div class="nav-item active" data-screen="screenHome"><span class="nav-icon">🏠</span>Home</div>
+  <div class="nav-item" data-screen="screenStats"><span class="nav-icon">📊</span>Stats</div>
+  <div class="nav-item" data-screen="screenShop"><span class="nav-icon">🧥</span>Locker</div>
+  <div class="nav-item" data-screen="screenSettings"><span class="nav-icon">⚙</span>Settings</div>
+</div>
+
+<!-- ==================== LOAD GAME ==================== -->
 <script type="module" src="js/main.js"></script>
 
 </body>
