@@ -10,10 +10,9 @@
  * - Konami code one-time flag
  * - Deep merge on load to handle new fields added in updates
  * - Safe upgrade handling for old saves
- *
- * NEW:
- * - speedTimerEnabled: hidden toggle for speed timer HUD (Item 16)
- * - Golden Doctor achievement support (Item 15)
+ * - speedTimerEnabled: hidden toggle for speed timer HUD
+ * - calendarData: study streak calendar history
+ * - firstRunComplete: onboarding flow flag
  */
 
 var STORAGE_KEY = 'buzzword_dash_v1';
@@ -38,7 +37,7 @@ var DEFAULTS = {
     userSpeed: 1,
     masterVolume: 0.7,
     sfxVolume: 0.8,
-    musicOn: false,
+    musicOn: true,
     nightMode: false,
     ttsEnabled: false,
     ttsRate: 1.0,
@@ -67,8 +66,14 @@ var DEFAULTS = {
     // Easter eggs
     konamiUsed: false,
 
-    // NEW: Speed timer hidden feature (Item 16)
-    speedTimerEnabled: false
+    // Speed timer hidden feature
+    speedTimerEnabled: false,
+
+    // Study streak calendar
+    calendarData: {},
+
+    // Onboarding
+    firstRunComplete: false
 };
 
 function deepClone(obj) {
@@ -107,8 +112,12 @@ class Storage {
                 if (this.data.lastLoginDate === undefined) this.data.lastLoginDate = null;
                 if (this.data.loginStreak === undefined) this.data.loginStreak = 0;
                 if (this.data.konamiUsed === undefined) this.data.konamiUsed = false;
-                // NEW: Ensure speedTimerEnabled exists
+                // Ensure speedTimerEnabled exists
                 if (this.data.speedTimerEnabled === undefined) this.data.speedTimerEnabled = false;
+                // Ensure calendarData exists
+                if (this.data.calendarData === undefined) this.data.calendarData = {};
+                // Ensure firstRunComplete exists
+                if (this.data.firstRunComplete === undefined) this.data.firstRunComplete = false;
             } else {
                 this.data = deepClone(DEFAULTS);
             }
