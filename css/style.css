@@ -959,3 +959,23 @@ html, body {
 .opponent-hud b {
   color: var(--accent-pink);
 }
+/* ==================== FIX: Multiplayer overlay inline style override ==================== */
+#multiplayerOverlay {
+  display: none !important;
+}
+#multiplayerOverlay.active {
+  display: flex !important;
+}
+
+/* ==================== FIX: Make home screen more transparent so 3D shows through ==================== */
+#screenHome .screen-scroll::before {
+  background: rgba(20, 10, 60, 0.35);
+}
+
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  #screenHome .screen-scroll::before {
+    background: rgba(20, 10, 60, 0.3);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+  }
+}
