@@ -542,11 +542,22 @@ var PU_COLORS = {
   magnet: 0xffaa00
 };
 
+// ===== POWER-UP TYPES AND COLORS =====
+
+var PU_TYPES = [
+  { type: 'shield', color: 0x4488ff, iconGeo: 'octahedron', label: 'Shield' },
+  { type: 'magnet', color: 0xffaa00, iconGeo: 'cone', label: 'Magnet' },
+  { type: 'double', color: 0xaa44ff, iconGeo: 'tetrahedron', label: '2× Score' },
+  { type: 'autoPilot', color: 0x00ee66, iconGeo: 'box', label: 'Auto-Pilot' },
+  { type: 'scoreFrenzy', color: 0xff4488, iconGeo: 'dodecahedron', label: 'Frenzy' }
+];
+
 export function spawnPowerup(scene, coinMeshes) {
-  var types = ['shield', 'slow', 'double', 'magnet'];
-  var type = types[Math.floor(Math.random() * types.length)];
+  var puDef = PU_TYPES[Math.floor(Math.random() * PU_TYPES.length)];
   var lane = Math.floor(Math.random() * 3);
-  var color = PU_COLORS[type];
+  var color = puDef.color;
+  var LANE_X = [-3, 0, 3];
+
   var group = new THREE.Group();
 
   // Outer glow (large, very transparent)
@@ -570,19 +581,35 @@ export function spawnPowerup(scene, coinMeshes) {
   );
   group.add(inner);
 
-  // Icon shape on top
+  // Type-specific icon shape on top
   var icon;
-  if (type === 'shield') {
-    icon = new THREE.Mesh(new THREE.OctahedronGeometry(0.2, 0), new THREE.MeshBasicMaterial({ color: 0xffffff }));
-  } else if (type === 'slow') {
-    icon = new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.03, 6, 12), new THREE.MeshBasicMaterial({ color: 0xffffff }));
-  } else if (type === 'double') {
-    icon = new THREE.Mesh(new THREE.TetrahedronGeometry(0.18, 0), new THREE.MeshBasicMaterial({ color: 0xffffff }));
-  } else {
-    icon = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.3, 6), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+  switch (puDef.iconGeo) {
+    case 'octahedron':
+      icon = new THREE.Mesh(new THREE.OctahedronGeometry(0.2, 0), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+      break;
+    case 'cone':
+      icon = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.3, 6), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+      break;
+    case 'tetrahedron':
+      icon = new THREE.Mesh(new THREE.TetrahedronGeometry(0.18, 0), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+      break;
+    case 'box':
+      // Medical cross shape for auto-pilot
+      var crossGroup = new THREE.Group();
+      crossGroup.add(new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.08, 0.08), new THREE.MeshBasicMaterial({ color: 0xffffff })));
+      crossGroup.add(new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.25, 0.08), new THREE.MeshBasicMaterial({ color: 0xffffff })));
+      icon = crossGroup;
+      break;
+    case 'dodecahedron':
+      icon = new THREE.Mesh(new THREE.DodecahedronGeometry(0.15, 0), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+      break;
+    default:
+      icon = new THREE.Mesh(new THREE.OctahedronGeometry(0.18, 0), new THREE.MeshBasicMaterial({ color: 0xffffff }));
   }
-  icon.position.set(0, 0.6, 0);
-  group.add(icon);
+  if (icon) {
+    icon.position.set(0, 0.6, 0);
+    group.add(icon);
+  }
 
   // Rotating ring
   var ring = new THREE.Mesh(
@@ -592,14 +619,22 @@ export function spawnPowerup(scene, coinMeshes) {
   ring.rotation.x = Math.PI / 2;
   group.add(ring);
 
-  // Second ring (perpendicular)
-  var ring2 = ring.clone();
-  ring2.rotation.x = 0;
+  // Second ring perpendicular
+  var ring2 = new THREE.Mesh(
+    new THREE.TorusGeometry(0.48, 0.025, 8, 24),
+    new THREE.MeshBasicMaterial({ color: color, transparent: true, opacity: 0.2 })
+  );
   ring2.rotation.y = Math.PI / 2;
   group.add(ring2);
 
   group.position.set(LANE_X[lane], 1.5, -55);
-  group.userData = { lane: lane, collected: false, type: 'powerup', powerupType: type };
+  group.userData = {
+    lane: lane,
+    collected: false,
+    type: 'powerup',
+    powerupType: puDef.type
+  };
+
   scene.add(group);
   coinMeshes.push(group);
 }
