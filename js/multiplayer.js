@@ -1,262 +1,560 @@
 /**
- * multiplayer.js — PeerJS head-to-head + optional Firebase leaderboard
+ * multiplayer.js
  *
- * PeerJS handles real-time peer-to-peer connections via WebRTC.
- * The free PeerJS cloud signaling server handles connection setup [3].
- * After the initial handshake, all data flows directly between browsers.
+ * PeerJS transport and match protocol for Buzzword Dash.
  *
- * Firebase (optional) handles async leaderboards and daily rankings.
- * Both work on GitHub Pages with zero server cost.
- *
- * Usage:
- *   import { multiplayer } from './multiplayer.js';
- *   await multiplayer.init();
- *   multiplayer.hostGame(function(code) { ... });
- *   multiplayer.joinGame('ABCDE', function() { ... });
- *   multiplayer.sendGameState({ lane: 1, score: 500 });
+ * Supports:
+ * - Five-character room codes
+ * - Host and join flows
+ * - Ready state
+ * - Synchronized match start
+ * - Live game-state updates
+ * - Encounter results
+ * - End-of-run results
+ * - Ping/latency measurement
+ * - Graceful disconnect and error handling
  */
 
+var PEERJS_URL =
+  'https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js';
+
+var PEER_PREFIX = 'buzzworddash-';
+
+var peerLoadPromise = null;
+
+function loadPeerJS() {
+  if (window.Peer) {
+    return Promise.resolve();
+  }
+
+  if (peerLoadPromise) {
+    return peerLoadPromise;
+  }
+
+  peerLoadPromise = new Promise(function (resolve, reject) {
+    var existing = document.querySelector(
+      'script[data-buzzword-peerjs]'
+    );
+
+    if (existing) {
+      existing.addEventListener('load', function () {
+        resolve();
+      });
+
+      existing.addEventListener('error', function () {
+        reject(new Error('Failed to load PeerJS.'));
+      });
+
+      return;
+    }
+
+    var script = document.createElement('script');
+    script.src = PEERJS_URL;
+    script.async = true;
+    script.dataset.buzzwordPeerjs = 'true';
+
+    script.onload = function () {
+      if (window.Peer) {
+        resolve();
+      } else {
+        reject(new Error('PeerJS loaded but Peer was unavailable.'));
+      }
+    };
+
+    script.onerror = function () {
+      reject(new Error('Failed to load PeerJS.'));
+    };
+
+    document.head.appendChild(script);
+  });
+
+  return peerLoadPromise;
+}
+
+function normalizeRoomCode(code) {
+  return String(code || '')
+    .toUpperCase()
+    .replace(/[^A-HJ-NP-Z2-9]/g, '')
+    .slice(0, 5);
+}
+
 export class Multiplayer {
-    constructor() {
-        this.peer = null;
-        this.conn = null;
-        this.roomCode = '';
-        this.isHost = false;
-        this.connected = false;
+  constructor() {
+    this.peer = null;
+    this.conn = null;
 
-        // Callbacks
-        this.onOpponentUpdate = null;
-        this.onConnected = null;
-        this.onDisconnected = null;
-        this.onError = null;
+    this.roomCode = '';
+    this.isHost = false;
+    this.connected = false;
+
+    this.localReady = false;
+    this.opponentReady = false;
+
+    this.latency = null;
+    this.pingInterval = null;
+
+    this.onConnected = null;
+    this.onDisconnected = null;
+    this.onError = null;
+
+    this.onOpponentUpdate = null;
+    this.onReadyState = null;
+    this.onMatchStart = null;
+    this.onEncounterResult = null;
+    this.onEndRun = null;
+    this.onMessage = null;
+  }
+
+  async init() {
+    await loadPeerJS();
+  }
+
+  generateRoomCode() {
+    var chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    var code = '';
+
+    for (var i = 0; i < 5; i++) {
+      code += chars.charAt(
+        Math.floor(Math.random() * chars.length)
+      );
     }
 
-    /**
-     * Dynamically load PeerJS from CDN.
-     * No npm install needed — works on GitHub Pages.
-     */
-    async init() {
-        if (window.Peer) return;
+    return code;
+  }
 
-        await new Promise(function (resolve, reject) {
-            var script = document.createElement('script');
-            script.src = 'https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js';
-            script.onload = resolve;
-            script.onerror = function () {
-                reject(new Error('Failed to load PeerJS'));
-            };
-            document.head.appendChild(script);
-        });
+  async hostGame(onReady) {
+    await this.init();
+    this.disconnect();
+
+    this.isHost = true;
+    this.roomCode = this.generateRoomCode();
+    this.localReady = false;
+    this.opponentReady = false;
+
+    var self = this;
+
+    try {
+      this.peer = new window.Peer(
+        PEER_PREFIX + this.roomCode
+      );
+    } catch (error) {
+      this._emitError(
+        'Failed to create room: ' + error.message
+      );
+      return;
     }
 
-    /**
-     * Generate a 5-character room code.
-     * Uses characters that are unambiguous (no O/0, I/1, L).
-     */
-    generateRoomCode() {
-        var chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-        var code = '';
-        for (var i = 0; i < 5; i++) {
-            code += chars.charAt(Math.floor(Math.random() * chars.length));
+    this.peer.on('open', function () {
+      if (onReady) {
+        onReady(self.roomCode);
+      }
+    });
+
+    this.peer.on('connection', function (conn) {
+      if (self.conn && self.conn.open) {
+        conn.close();
+        return;
+      }
+
+      self.conn = conn;
+      self._setupConnection(conn);
+    });
+
+    this.peer.on('disconnected', function () {
+      self.connected = false;
+      self._stopPing();
+
+      if (self.onDisconnected) {
+        self.onDisconnected('Peer signaling disconnected.');
+      }
+    });
+
+    this.peer.on('close', function () {
+      self._handleDisconnected('Room closed.');
+    });
+
+    this.peer.on('error', function (error) {
+      self._emitError(
+        (error.type || 'Peer error') +
+        ': ' +
+        (error.message || 'Unknown error')
+      );
+    });
+  }
+
+  async joinGame(roomCode, onReady) {
+    await this.init();
+    this.disconnect();
+
+    var normalized = normalizeRoomCode(roomCode);
+
+    if (normalized.length !== 5) {
+      this._emitError('Room code must contain five characters.');
+      return;
+    }
+
+    this.isHost = false;
+    this.roomCode = normalized;
+    this.localReady = false;
+    this.opponentReady = false;
+
+    var self = this;
+
+    try {
+      this.peer = new window.Peer();
+    } catch (error) {
+      this._emitError(
+        'Failed to initialize multiplayer: ' + error.message
+      );
+      return;
+    }
+
+    this.peer.on('open', function () {
+      try {
+        var conn = self.peer.connect(
+          PEER_PREFIX + self.roomCode,
+          {
+            reliable: true,
+            serialization: 'json'
+          }
+        );
+
+        self.conn = conn;
+        self._setupConnection(conn);
+
+        if (onReady) {
+          onReady();
         }
-        return code;
+      } catch (error) {
+        self._emitError(
+          'Connection failed: ' + error.message
+        );
+      }
+    });
+
+    this.peer.on('disconnected', function () {
+      self.connected = false;
+      self._stopPing();
+
+      if (self.onDisconnected) {
+        self.onDisconnected('Peer signaling disconnected.');
+      }
+    });
+
+    this.peer.on('close', function () {
+      self._handleDisconnected('Connection closed.');
+    });
+
+    this.peer.on('error', function (error) {
+      var message = error.message || error.type || 'Unknown error';
+
+      if (error.type === 'peer-unavailable') {
+        message = 'Room not found. Check the room code.';
+      }
+
+      self._emitError(message);
+    });
+  }
+
+  _setupConnection(conn) {
+    var self = this;
+
+    conn.on('open', function () {
+      self.connected = true;
+      self.localReady = false;
+      self.opponentReady = false;
+
+      self._startPing();
+
+      self.send({
+        type: 'hello',
+        protocolVersion: 1,
+        timestamp: Date.now()
+      });
+
+      if (self.onConnected) {
+        self.onConnected({
+          roomCode: self.roomCode,
+          isHost: self.isHost
+        });
+      }
+    });
+
+    conn.on('data', function (data) {
+      self._handleMessage(data);
+    });
+
+    conn.on('close', function () {
+      self._handleDisconnected('Opponent disconnected.');
+    });
+
+    conn.on('error', function (error) {
+      self._emitError(
+        'Connection error: ' +
+        (error.message || 'Unknown error')
+      );
+    });
+  }
+
+  _handleMessage(data) {
+    if (!data || typeof data !== 'object') {
+      return;
     }
 
-    /**
-     * Host a new game room.
-     * Creates a Peer with a predictable ID based on the room code.
-     * The opponent joins by connecting to this ID.
-     *
-     * @param {function} onReady - Called with the room code when peer is open
-     */
-    hostGame(onReady) {
-        var self = this;
-        this.isHost = true;
-        this.roomCode = this.generateRoomCode();
-
-        try {
-            this.peer = new Peer('buzzworddash-' + this.roomCode);
-        } catch (e) {
-            if (this.onError) this.onError('Failed to create peer: ' + e.message);
-            return;
-        }
-
-        this.peer.on('open', function () {
-            if (onReady) onReady(self.roomCode);
-        });
-
-        this.peer.on('connection', function (conn) {
-            self.conn = conn;
-            self._setupConnection(conn);
-        });
-
-        this.peer.on('error', function (err) {
-            console.warn('PeerJS host error:', err.type, err.message);
-            if (self.onError) self.onError(err.type + ': ' + err.message);
-        });
+    if (this.onMessage) {
+      this.onMessage(data);
     }
 
-    /**
-     * Join an existing game room.
-     * Connects to the host's Peer using the room code.
-     *
-     * @param {string} roomCode - The 5-character room code
-     * @param {function} onReady - Called when connection attempt starts
-     */
-    joinGame(roomCode, onReady) {
-        var self = this;
-        this.isHost = false;
-        this.roomCode = roomCode.toUpperCase().trim();
-
-        try {
-            this.peer = new Peer();
-        } catch (e) {
-            if (this.onError) this.onError('Failed to create peer: ' + e.message);
-            return;
-        }
-
-        this.peer.on('open', function () {
-            try {
-                var conn = self.peer.connect('buzzworddash-' + self.roomCode, {
-                    reliable: true
-                });
-                self.conn = conn;
-                self._setupConnection(conn);
-                if (onReady) onReady();
-            } catch (e) {
-                if (self.onError) self.onError('Connection failed: ' + e.message);
-            }
-        });
-
-        this.peer.on('error', function (err) {
-            console.warn('PeerJS join error:', err.type, err.message);
-            if (self.onError) self.onError(err.type + ': ' + err.message);
-        });
-    }
-
-    /**
-     * Set up event handlers on a data connection.
-     * @param {DataConnection} conn
-     */
-    _setupConnection(conn) {
-        var self = this;
-
-        conn.on('open', function () {
-            self.connected = true;
-            if (self.onConnected) self.onConnected();
-        });
-
-        conn.on('data', function (data) {
-            if (self.onOpponentUpdate) self.onOpponentUpdate(data);
-        });
-
-        conn.on('close', function () {
-            self.connected = false;
-            if (self.onDisconnected) self.onDisconnected();
-        });
-
-        conn.on('error', function (err) {
-            console.warn('PeerJS connection error:', err);
-            if (self.onError) self.onError('Connection error');
-        });
-    }
-
-    /**
-     * Send arbitrary data to the connected peer.
-     * @param {object} data
-     */
-    send(data) {
-        if (this.conn && this.conn.open) {
-            try {
-                this.conn.send(data);
-            } catch (e) {
-                console.warn('Send failed:', e);
-            }
-        }
-    }
-
-    /**
-     * Send current game state to opponent.
-     * Called every frame or on significant state changes during gameplay.
-     *
-     * @param {object} state - Current game state snapshot
-     */
-    sendGameState(state) {
+    switch (data.type) {
+      case 'hello':
         this.send({
-            type: 'gameState',
-            lane: state.lane,
-            score: state.score,
-            streak: state.streak,
-            correct: state.correct,
-            wrong: state.wrong,
-            rushing: state.rushing,
-            rushStacks: state.rushStacks,
-            timestamp: Date.now()
+          type: 'helloAck',
+          protocolVersion: 1,
+          timestamp: Date.now()
         });
-    }
+        break;
 
-    /**
-     * Send end-of-run results to opponent.
-     *
-     * @param {object} finalState - Final run statistics
-     */
-    sendEndRun(finalState) {
-        this.send({
-            type: 'endRun',
-            score: finalState.score,
-            correct: finalState.correct,
-            wrong: finalState.wrong,
-            bestStreak: finalState.bestStreak,
-            coins: finalState.coins,
-            timestamp: Date.now()
-        });
-    }
+      case 'ready':
+        this.opponentReady = !!data.ready;
 
-    /**
-     * Send a ready signal to opponent (both players ready to start).
-     */
-    sendReady() {
-        this.send({ type: 'ready', timestamp: Date.now() });
-    }
-
-    /**
-     * Send encounter result in real-time.
-     *
-     * @param {boolean} correct - Whether the answer was correct
-     * @param {number} score - Current total score
-     */
-    sendEncounterResult(correct, score) {
-        this.send({
-            type: 'encounterResult',
-            correct: correct,
-            score: score,
-            timestamp: Date.now()
-        });
-    }
-
-    /**
-     * Check if currently connected to an opponent.
-     * @returns {boolean}
-     */
-    isConnected() {
-        return this.connected && this.conn && this.conn.open;
-    }
-
-    /**
-     * Disconnect from opponent and destroy peer.
-     */
-    disconnect() {
-        this.connected = false;
-        if (this.conn) {
-            try { this.conn.close(); } catch (e) {}
-            this.conn = null;
+        if (this.onReadyState) {
+          this.onReadyState({
+            localReady: this.localReady,
+            opponentReady: this.opponentReady
+          });
         }
-        if (this.peer) {
-            try { this.peer.destroy(); } catch (e) {}
-            this.peer = null;
+        break;
+
+      case 'startMatch':
+        if (this.onMatchStart) {
+          this.onMatchStart({
+            startAt: data.startAt,
+            seed: data.seed,
+            subjects: data.subjects || [],
+            mode: data.mode || 'versus'
+          });
         }
-        this.roomCode = '';
+        break;
+
+      case 'gameState':
+        if (this.onOpponentUpdate) {
+          this.onOpponentUpdate(data);
+        }
+        break;
+
+      case 'encounterResult':
+        if (this.onEncounterResult) {
+          this.onEncounterResult(data);
+        }
+        break;
+
+      case 'endRun':
+        if (this.onEndRun) {
+          this.onEndRun(data);
+        }
+        break;
+
+      case 'ping':
+        this.send({
+          type: 'pong',
+          pingId: data.pingId,
+          originalTimestamp: data.originalTimestamp,
+          timestamp: Date.now()
+        });
+        break;
+
+      case 'pong':
+        if (data.originalTimestamp) {
+          this.latency = Math.max(
+            0,
+            Date.now() - data.originalTimestamp
+          );
+        }
+        break;
     }
+  }
+
+  send(data) {
+    if (!this.conn || !this.conn.open) {
+      return false;
+    }
+
+    try {
+      this.conn.send(data);
+      return true;
+    } catch (error) {
+      console.warn('Multiplayer send failed:', error);
+      return false;
+    }
+  }
+
+  sendReady(ready) {
+    this.localReady = ready !== false;
+
+    this.send({
+      type: 'ready',
+      ready: this.localReady,
+      timestamp: Date.now()
+    });
+
+    if (this.onReadyState) {
+      this.onReadyState({
+        localReady: this.localReady,
+        opponentReady: this.opponentReady
+      });
+    }
+  }
+
+  sendStartMatch(config) {
+    if (!this.isHost) {
+      return false;
+    }
+
+    config = config || {};
+
+    var message = {
+      type: 'startMatch',
+      startAt: config.startAt || Date.now() + 1500,
+      seed: config.seed || Math.floor(Math.random() * 2147483647),
+      subjects: Array.isArray(config.subjects)
+        ? config.subjects.slice()
+        : [],
+      mode: 'versus',
+      timestamp: Date.now()
+    };
+
+    this.send(message);
+    return message;
+  }
+
+  sendGameState(state) {
+    state = state || {};
+
+    return this.send({
+      type: 'gameState',
+      lane: Number(state.lane) || 0,
+      score: Number(state.score) || 0,
+      streak: Number(state.streak) || 0,
+      correct: Number(state.correct) || 0,
+      wrong: Number(state.wrong) || 0,
+      lives: Number(state.lives) || 0,
+      rushing: !!state.rushing,
+      rushStacks: Number(state.rushStacks) || 0,
+      running: !!state.running,
+      timestamp: Date.now()
+    });
+  }
+
+  sendEncounterResult(correct, score) {
+    return this.send({
+      type: 'encounterResult',
+      correct: !!correct,
+      score: Number(score) || 0,
+      timestamp: Date.now()
+    });
+  }
+
+  sendEndRun(finalState) {
+    finalState = finalState || {};
+
+    return this.send({
+      type: 'endRun',
+      score: Number(finalState.score) || 0,
+      correct: Number(finalState.correct) || 0,
+      wrong: Number(finalState.wrong) || 0,
+      bestStreak: Number(finalState.bestStreak) || 0,
+      coins: Number(finalState.coins) || 0,
+      timestamp: Date.now()
+    });
+  }
+
+  isConnected() {
+    return !!(
+      this.connected &&
+      this.conn &&
+      this.conn.open
+    );
+  }
+
+  _startPing() {
+    this._stopPing();
+
+    var self = this;
+
+    this.pingInterval = setInterval(function () {
+      if (!self.isConnected()) {
+        return;
+      }
+
+      var now = Date.now();
+
+      self.send({
+        type: 'ping',
+        pingId: now,
+        originalTimestamp: now
+      });
+    }, 3000);
+  }
+
+  _stopPing() {
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+      this.pingInterval = null;
+    }
+  }
+
+  _handleDisconnected(reason) {
+    var wasConnected = this.connected;
+
+    this.connected = false;
+    this.localReady = false;
+    this.opponentReady = false;
+    this._stopPing();
+
+    if (wasConnected && this.onDisconnected) {
+      this.onDisconnected(reason || 'Disconnected.');
+    }
+  }
+
+  _emitError(message) {
+    console.warn('Multiplayer:', message);
+
+    if (this.onError) {
+      this.onError(message);
+    }
+  }
+
+  disconnect() {
+    this._stopPing();
+
+    this.connected = false;
+    this.localReady = false;
+    this.opponentReady = false;
+
+    if (this.conn) {
+      try {
+        this.conn.close();
+      } catch (error) {
+        // Ignore cleanup errors.
+      }
+
+      this.conn = null;
+    }
+
+    if (this.peer) {
+      try {
+        this.peer.destroy();
+      } catch (error) {
+        // Ignore cleanup errors.
+      }
+
+      this.peer = null;
+    }
+
+    this.roomCode = '';
+    this.isHost = false;
+    this.latency = null;
+  }
 }
 
 export var multiplayer = new Multiplayer();
