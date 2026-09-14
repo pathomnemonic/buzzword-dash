@@ -2,36 +2,16 @@
  * main.js — Initialization and wiring
  *
  * All features through Final Phase:
- *
- * CALLBACKS WIRED:
- * - onEncounterStart: show buzzwords + answer choices
- * - onEncounterResolve: show feedback + teaching point
- * - onRunEnd: show post-run review + check achievements
- * - onHudUpdate: update HUD every frame
- * - onScorePopup: floating +points text + coin burst
- * - onStreakMilestone: "5× STREAK!" display
- * - onPowerupCollected: notification + screen-edge glow
- * - onAchievementUnlocked: achievement banner notifications
- * - onContinuePrompt: show continue-with-coins overlay
- * - onNightModeChange: update 3D scene when night mode toggled
- * - onEquipChange: rebuild 3D player when equipment changes
- *
- * GLOBAL FUNCTIONS:
- * - UI_editCard(id): opens card editor for custom card
- * - UI_deleteCard(id): deletes custom card with confirm
- * - UI_flagCard(id): flags card with reason prompt
- *
- * VALIDATION:
- * - Daily mode: checks if already completed today
- * - Weakness mode: checks if enough weak cards exist
- * - Both check built-in AND custom cards
- *
- * MUSIC:
- * - Auto-starts on first user interaction if was on last session
- * - Browsers require user gesture for AudioContext
- *
- * TOUCH:
- * - Prevents pull-to-refresh during gameplay
+ * - All game callbacks wired (encounters, achievements, continue,
+ *   score popup, streak, powerup, skin name, night mode, equipment)
+ * - Easter egg global functions (edit/delete/flag cards)
+ * - Konami code handled in ui.js
+ * - Title tap easter egg handled in ui.js
+ * - Daily login reward handled in ui.js
+ * - Music auto-start on first interaction
+ * - Skin ambient audio started on run start
+ * - Touch prevention during gameplay
+ * - Retroactive achievement check on load
  */
 
 import { game } from './game/engine.js';
@@ -41,12 +21,7 @@ import { audio } from './audio.js';
 import { CARDS } from './cards.js';
 import { customCards } from './customcards.js';
 
-// ===================================================================
-// Global functions for onclick handlers in dynamically generated HTML
-// ===================================================================
-// These are needed because innerHTML-generated buttons cannot use
-// module-scoped references directly. The onclick attributes in
-// dynamic HTML call these global functions which delegate to UI.
+// ===== GLOBAL FUNCTIONS FOR DYNAMIC HTML ONCLICK =====
 
 window.UI_editCard = function (cardId) {
   ui.openCardEditor(cardId);
@@ -71,36 +46,24 @@ window.UI_flagCard = function (cardId) {
   );
   if (reason) {
     var flags = storage.get('flags');
-    flags.push({
-      cardId: cardId,
-      reason: reason,
-      date: Date.now()
-    });
+    flags.push({ cardId: cardId, reason: reason, date: Date.now() });
     storage.set('flags', flags);
-    alert('Card flagged — thank you for helping improve the game!');
+    alert('Card flagged \u2014 thank you for helping improve the game!');
   }
 };
 
-// ===================================================================
-// Mode starter — validates conditions then launches a game mode
-// ===================================================================
+// ===== MODE STARTER =====
 
 function startMode(mode) {
-  // Validate daily round completion
   if (mode === 'daily' && storage.get('dailyDone')) {
     alert('Daily round already completed today! Come back tomorrow.');
     return;
   }
-
-  // Validate weakness mode has enough weak cards to play
   if (mode === 'weakness') {
     var subjects = storage.get('selectedSubjects');
-    // Merge built-in cards with user-created custom cards
     var allCards = CARDS.concat(customCards.getAll());
     var weakCards = allCards.filter(function (c) {
-      // Card must be in a selected subject
       if (subjects.indexOf(c.subj) < 0) return false;
-      // Card must have been missed or have low accuracy
       var s = storage.getCardStat(c.id);
       return s.wrong > 0 || (s.seen > 0 && s.correct / s.seen < 0.7);
     });
@@ -110,68 +73,60 @@ function startMode(mode) {
     }
   }
 
-  // Initialize game state for this mode
   game.start(mode);
-
-  // Hide all UI screens, show the HUD
   ui.hideAll();
   ui.showHud();
 
-  // Countdown 3-2-1-GO then start the run
+  // Start skin-specific ambient audio
+  if (game.currentSkin) {
+    audio.startAmbient(game.currentSkin.name);
+  }
+
   ui.countdown(function () {
     game.go();
   });
 }
 
-// ===================================================================
-// Main initialization — called when DOM is ready
-// ===================================================================
+// ===== MAIN INITIALIZATION =====
 
 function init() {
-  // Initialize storage (loads from localStorage or creates defaults)
   storage.load();
   storage.checkDailyReset();
-
-  // Initialize Three.js game engine (creates scene, camera, renderer)
   game.init();
-
-  // Initialize UI (renders all screens, binds navigation)
   ui.init();
 
-  // ===============================================================
-  // Wire game -> UI callbacks
-  // ===============================================================
+  // ===== WIRE GAME -> UI CALLBACKS =====
 
-  // When a new encounter starts, show buzzwords and answer choices
+  // New encounter: show buzzwords and answer choices
   game.onEncounterStart = function (card, gates) {
     ui.showBuzzwords(card);
     ui.showAnswerChoices(gates);
   };
 
-  // When an encounter resolves, show correct/incorrect feedback
+  // Encounter resolved: show feedback
   game.onEncounterResolve = function (card, wasCorrect) {
     ui.showFeedback(card, wasCorrect);
-    // In study mode, also show teaching point for correct answers
     if (game.mode === 'study' && wasCorrect) {
       ui.showStudyTeaching(card);
     }
   };
 
-  // When a run ends, show the post-run M&M review screen
+  // Run ended: show post-run review
   game.onRunEnd = function () {
     ui.hideHud();
     ui.hideAnswerChoices();
+
+    // Stop ambient audio
+    audio.stopAmbient();
+
     ui.showPostRun(game);
 
-    // Bind the post-run action buttons
-    // (these are created dynamically by showPostRun)
     var againBtn = document.getElementById('playAgainBtn');
     if (againBtn) {
       againBtn.addEventListener('click', function () {
         startMode(game.mode);
       });
     }
-
     var weakBtn = document.getElementById('weaknessBtn');
     if (weakBtn) {
       weakBtn.addEventListener('click', function () {
@@ -180,7 +135,7 @@ function init() {
     }
   };
 
-  // HUD update — called every frame by the game engine
+  // HUD update every frame
   game.onHudUpdate = function () {
     ui.updateHud(game);
   };
@@ -191,7 +146,7 @@ function init() {
     ui.showCoinBurst();
   };
 
-  // Streak milestone display at 5, 10, 15, etc.
+  // Streak milestone display
   game.onStreakMilestone = function (streak, multiplier) {
     ui.showStreakMilestone(streak, multiplier);
   };
@@ -202,46 +157,45 @@ function init() {
     ui.showPowerupGlow(type);
   };
 
-  // Achievement unlocked: banner notification with fanfare
+  // Achievement unlocked: banner notification
   game.onAchievementUnlocked = function (achievementIds) {
     ui.showAchievementNotification(achievementIds);
   };
 
-  // Continue prompt: show overlay when player dies but can pay to continue
+  // Continue prompt: show overlay when player dies but can pay
   game.onContinuePrompt = function (cost) {
     ui.showContinuePrompt(
       cost,
-      // On continue: spend coins, resume game
       function () {
         var success = game.doContinue();
         if (success) {
           ui.showHud();
         } else {
-          // Shouldn't happen since we checked coins, but handle gracefully
           game.endRun();
         }
       },
-      // On decline: end the run
       function () {
         game.endRun();
       }
     );
   };
 
-  // When equipment changes in shop, rebuild the 3D player model
-  // so the new hat/gear/skin/trail appears immediately
+  // Skin selected: show track name popup
+  game.onSkinSelected = function (skinName) {
+    ui.showTrackName(skinName);
+  };
+
+  // Equipment changed in shop: rebuild 3D player model
   ui.onEquipChange = function () {
     game.buildPlayer();
   };
 
-  // When night mode is toggled in settings, update the 3D scene
+  // Night mode toggled: update 3D scene
   ui.onNightModeChange = function () {
     game.updateNightMode();
   };
 
-  // ===============================================================
-  // Bind mode-select buttons on the home screen
-  // ===============================================================
+  // ===== BIND MODE-SELECT BUTTONS =====
 
   document.querySelectorAll('.mode-card').forEach(function (card) {
     card.addEventListener('click', function () {
@@ -250,59 +204,40 @@ function init() {
     });
   });
 
-  // ===============================================================
-  // Bind pause / resume / end run buttons
-  // ===============================================================
+  // ===== BIND PAUSE / RESUME / END RUN =====
 
   document.getElementById('pauseBtn').addEventListener('click', function () {
     game.togglePause();
   });
-
   document.getElementById('resumeBtn').addEventListener('click', function () {
     game.resume();
   });
-
   document.getElementById('endRunBtn').addEventListener('click', function () {
+    audio.stopAmbient();
     game.endRun();
   });
 
-  // ===============================================================
-  // Music auto-start if it was on last session
-  // ===============================================================
-  // Browsers require a user gesture to start AudioContext,
-  // so we defer music start to the first click event if musicOn
-  // was saved as true in the previous session.
+  // ===== MUSIC AUTO-START =====
 
   if (storage.get('musicOn')) {
     document.addEventListener('click', function startMusicOnce() {
       audio.startMusic();
-      document.getElementById('musicToggleBtn').textContent = '🎵 Music: ON';
+      document.getElementById('musicToggleBtn').textContent = '\uD83C\uDFB5 Music: ON';
       document.removeEventListener('click', startMusicOnce);
     }, { once: true });
   }
 
-  // ===============================================================
-  // Prevent pull-to-refresh / bounce scrolling during gameplay
-  // ===============================================================
-  // On mobile, swiping down during gameplay triggers the browser's
-  // pull-to-refresh gesture. This prevents that while game is active.
+  // ===== PREVENT PULL-TO-REFRESH =====
 
   document.addEventListener('touchmove', function (e) {
     if (game.running) e.preventDefault();
   }, { passive: false });
 
-  // ===============================================================
-  // Check for achievements that may have been earned before
-  // this code was added (retroactive check on load)
-  // ===============================================================
+  // ===== RETROACTIVE ACHIEVEMENT CHECK =====
 
-  var retroAchievements = storage.checkAchievements(null);
-  // Don't show notifications for retroactive unlocks — they'll see
-  // them in the achievements screen naturally
+  storage.checkAchievements(null);
 }
 
-// ===================================================================
-// Start everything when DOM is ready
-// ===================================================================
+// ===== START =====
 
 window.addEventListener('DOMContentLoaded', init);
