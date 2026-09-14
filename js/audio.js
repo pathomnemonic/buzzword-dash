@@ -1,27 +1,22 @@
 /**
  * audio.js — Sound effects, procedural music, TTS, and ambient audio
  *
- * All features through Final Phase + new additions:
- * - 3-4 coin sound variations (random selection)
- * - 3-4 correct answer variations
+ * Features:
+ * - 3-4 coin sound variations with stereo panning based on lane position
+ * - 3-4 correct answer variations with streak pitch escalation
  * - Skin-specific ambient drone tones
  * - Speed-reactive pitch shifting
- * - Between-milestone streak pitch escalation (NEW)
- *   Each correct answer plays at a slightly higher pitch,
- *   creating an ascending musical scale within each 5-answer
- *   streak segment. Resets on wrong answer.
- *   Formula: baseFreq = 523 + (correctCounter % 5) * 30
+ * - Haptic feedback via navigator.vibrate() for supported devices
  * - Richer whoosh sound for rushing
  * - Achievement and continue sounds
  *
- * Web Audio API best practices followed:
- * - AudioParam methods (setValueAtTime, exponentialRampToValueAtTime)
- *   take precedence over direct .value assignment for precise timing
- * - AudioContext created with ensureContext() handles autoplay policy:
- *   "if created outside a user gesture, state will be suspended and
- *   needs resume() after user interaction"
- * - Chrome auto-resumes AudioContext when user interacts AND
- *   start() is called on a source node
+ * Stereo panning uses StereoPannerNode which is Baseline Widely Available
+ * since April 2021 — supported in all modern browsers [6] [8].
+ *
+ * Haptic feedback uses navigator.vibrate() which is implemented in
+ * Chromium-based browsers only. Firefox removed support in v129 (2024),
+ * and WebKit/Safari has never shipped it [9] [10]. The vibrate() helper
+ * gracefully degrades to a no-op on unsupported browsers.
  */
 
 import { storage } from './storage.js';
@@ -38,11 +33,9 @@ class AudioEngine {
         this.currentStep = 0;
         this.speedPitchMultiplier = 1.0;
 
-        // ===== NEW: Streak pitch escalation tracking =====
-        // Increments on each correct answer. Used to shift the base
-        // frequency of the correct-answer sound upward, creating an
-        // ascending scale effect. Resets to 0 on wrong answer.
-        // Engine.js sets audio.correctCounter = 0 on wrong answer.
+        // Streak pitch escalation tracking
+        // Increments on each correct answer, resets on wrong answer
+        // Formula: baseFreq = 523 + (correctCounter % 5) * 30
         this.correctCounter = 0;
     }
 
@@ -67,49 +60,68 @@ class AudioEngine {
         return storage.get('masterVolume') * storage.get('sfxVolume');
     }
 
+    // ===== HAPTIC FEEDBACK =====
+    // Chromium-based browsers only. Gracefully degrades on Safari/Firefox [9] [10].
+
+    vibrate(pattern) {
+        if (navigator.vibrate) {
+            try {
+                navigator.vibrate(pattern);
+            } catch (e) { /* silently ignore */ }
+        }
+    }
+
     // ===== SOUND EFFECT VARIATIONS =====
 
     /**
-     * Play a sound effect with optional variation.
-     * Multiple variations prevent audio fatigue from hearing
-     * the identical sound hundreds of times.
+     * Play a sound effect with optional lane for stereo panning.
+     * @param {string} type - Sound type
+     * @param {number} [lane] - Lane position (0=left, 1=center, 2=right) for stereo panning
      */
-    play(type) {
+    play(type, lane) {
         if (!this.ensureContext()) return;
         var vol = this.getVolume();
         if (vol <= 0) return;
 
         switch (type) {
-            case 'correct': this._playCorrectVariation(vol); break;
-            case 'wrong': this._playWrong(vol); break;
-            case 'coin': this._playCoinVariation(vol); break;
-            case 'rush': this._playRush(vol); break;
-            case 'countdown': this._playCountdown(vol); break;
-            case 'powerup': this._playPowerup(vol); break;
-            case 'continue': this._playContinue(vol); break;
-            case 'achievement': this._playAchievement(vol); break;
-            default: this._playGeneric(vol); break;
+            case 'correct':
+                this._playCorrectVariation(vol);
+                this.vibrate(50);
+                break;
+            case 'wrong':
+                this._playWrong(vol);
+                this.vibrate([30, 50, 30]);
+                break;
+            case 'coin':
+                this._playCoinVariation(vol, lane);
+                this.vibrate(15);
+                break;
+            case 'rush':
+                this._playRush(vol);
+                this.vibrate([20, 30, 20, 30, 20]);
+                break;
+            case 'countdown':
+                this._playCountdown(vol);
+                break;
+            case 'powerup':
+                this._playPowerup(vol);
+                this.vibrate([40, 20, 40]);
+                break;
+            case 'continue':
+                this._playContinue(vol);
+                break;
+            case 'achievement':
+                this._playAchievement(vol);
+                this.vibrate([30, 20, 30, 20, 60]);
+                break;
+            default:
+                this._playGeneric(vol);
+                break;
         }
     }
 
     // ===== CORRECT ANSWER: 4 variations + streak pitch escalation =====
 
-    /**
-     * Play correct answer sound with pitch escalation based on
-     * the current correctCounter.
-     *
-     * Between milestones (every 5th correct triggers playStreakSound
-     * instead), each consecutive correct answer plays at a slightly
-     * higher pitch. This creates an ascending musical scale that
-     * builds momentum and rewards streak building.
-     *
-     * Formula: baseFreq = 523 + (correctCounter % 5) * 30
-     * This gives frequencies: 523, 553, 583, 613, 643 Hz
-     * cycling every 5 answers within each streak segment.
-     *
-     * The correctCounter is incremented HERE (on each correct play)
-     * and reset to 0 by engine.js on wrong answers.
-     */
     _playCorrectVariation(vol) {
         var ctx = this.ctx;
         var t = ctx.currentTime;
@@ -169,13 +181,30 @@ class AudioEngine {
         o.connect(g); o.start(t); o.stop(t + 0.18);
     }
 
-    // --- Coin: 4 variations ---
-    _playCoinVariation(vol) {
+    // ===== COIN: 4 variations with stereo panning =====
+    // StereoPannerNode pans based on lane: left=-0.7, center=0, right=0.7 [6] [8]
+
+    _playCoinVariation(vol, lane) {
         var variation = Math.floor(Math.random() * 4);
         var ctx = this.ctx;
         var t = ctx.currentTime;
         var g = ctx.createGain();
-        g.connect(ctx.destination);
+
+        // Stereo panning based on lane position
+        var panner = null;
+        if (typeof ctx.createStereoPanner === 'function') {
+            panner = ctx.createStereoPanner();
+            var panValue = 0;
+            if (lane === 0) panValue = -0.7;
+            else if (lane === 2) panValue = 0.7;
+            panner.pan.setValueAtTime(panValue, t);
+            g.connect(panner);
+            panner.connect(ctx.destination);
+        } else {
+            // Fallback: no panning if StereoPannerNode not available
+            g.connect(ctx.destination);
+        }
+
         var o = ctx.createOscillator();
         o.type = 'sine';
 
@@ -207,7 +236,6 @@ class AudioEngine {
     _playRush(vol) {
         var ctx = this.ctx;
         var t = ctx.currentTime;
-        // Layered whoosh: sine sweep + noise burst
         var g1 = ctx.createGain();
         g1.connect(ctx.destination);
         var o1 = ctx.createOscillator();
@@ -304,20 +332,6 @@ class AudioEngine {
 
     // ===== STREAK SOUND WITH PITCH ESCALATION =====
 
-    /**
-     * Play streak milestone sound with escalating pitch.
-     * Called every 5th correct answer by engine.js.
-     *
-     * The streak milestone sound is grander than regular correct
-     * sounds — more notes, longer duration, higher base frequency.
-     * The base frequency scales with the overall streak count,
-     * so streak 5 sounds lower than streak 50.
-     *
-     * This is SEPARATE from the between-milestone pitch escalation
-     * in _playCorrectVariation(). The milestone sound celebrates
-     * reaching a multiple of 5; the per-answer escalation builds
-     * tension BETWEEN milestones.
-     */
     playStreakSound(streak) {
         if (!this.ensureContext()) return;
         var vol = this.getVolume();
@@ -342,9 +356,7 @@ class AudioEngine {
         g.gain.exponentialRampToValueAtTime(0.001, t + noteCount * duration + 0.12);
         o.connect(g); o.start(t); o.stop(t + noteCount * duration + 0.12);
 
-        // Reset the per-answer counter after milestone sound plays.
-        // This way the ascending scale restarts fresh for the next
-        // 5-answer segment, keeping the pattern predictable and musical.
+        // Reset per-answer counter after milestone
         this.correctCounter = 0;
     }
 
@@ -461,11 +473,6 @@ class AudioEngine {
 
     // ===== SPEED-REACTIVE PITCH =====
 
-    /**
-     * Update the pitch multiplier based on current game speed.
-     * Called by engine.js each frame. Subtly shifts music
-     * and ambient tones upward at higher speeds.
-     */
     updateSpeedPitch(baseSpeed, currentSpeed) {
         var ratio = currentSpeed / Math.max(baseSpeed, 0.01);
         this.speedPitchMultiplier = 1.0 + Math.min((ratio - 1) * 0.05, 0.15);
@@ -473,10 +480,6 @@ class AudioEngine {
 
     // ===== SKIN-SPECIFIC AMBIENT DRONE =====
 
-    /**
-     * Start a subtle ambient tone that matches the current skin's mood.
-     * Each skin gets a unique drone frequency and character.
-     */
     startAmbient(skinName) {
         this.stopAmbient();
         if (!this.ensureContext()) return;
@@ -485,7 +488,6 @@ class AudioEngine {
         this.ambientGain.gain.value = storage.get('masterVolume') * 0.04;
         this.ambientGain.connect(this.ctx.destination);
 
-        // Map skin names to ambient frequencies and wave types
         var ambientConfigs = {
             'Neural Highway': { freq: 110, freq2: 165, type: 'sine' },
             'Vascular Rush': { freq: 80, freq2: 120, type: 'sine' },
