@@ -1,50 +1,42 @@
 /**
- * engine.js — Main game class
+ * engine.js — Main game class with skin system integration
  *
- * All features through Final Phase:
+ * All features through Final Phase + Skin System:
  *
- * GAMEPLAY:
- * - 3-lane endless runner with gates, obstacles, coins, power-ups
- * - Continue with coins (pay CONTINUE_COST for extra life on death)
- * - No freeze after correct answers in endless mode
- * - Speed dial 1-10 (1 = 3.75 u/s, 10 = 37.5 u/s)
- * - Daily mode passes dailyIndex for deterministic card selection
- *
- * VISUALS:
- * - Flying environment props (specialty-themed, parallax depth)
- * - Player trail system (purchasable trail effects)
- * - Speed lines at high speeds and during rush
- * - Camera shake on wrong answer / obstacle hit
- * - Cape flutter animation for superhero avatar
- * - Coin magnet animation (coins curve toward player when magnet active)
- *
- * AUDIO:
- * - TTS speed adapts to game speed
- * - Streak milestone sounds with escalating pitch
- * - Achievement, continue, and powerup sounds
- *
- * PROGRESSION:
- * - Achievement checking at end of run
- * - Lifetime coin tracking via storage.addCoins()
- * - Quest progress tracking
+ * SKIN INTEGRATION:
+ * - Random skin selected at start of each run via getRandomSkin()
+ * - Track built using skin-specific geometry builders
+ * - Atmospheric particles updated every frame via object pool
+ * - Running lights animated with forward-sequencing wave
+ * - Camera FOV widens at higher speeds for tunnel-vision effect
+ * - Camera leans subtly when switching lanes
+ * - Streak visual intensity affects glow and particle density
  *
  * PERFORMANCE:
- * - GPU resource disposal on object removal per Three.js best practices:
- *   "Removing an object from the scene doesn't free its GPU memory.
- *    Dispose geometries, materials, and textures explicitly" [1]
+ * - setAnimationLoop for render loop [8]
+ * - Object pooling for particles [8]
+ * - GPU resource disposal on object removal [8]
+ * - MeshBasicMaterial for all decorative elements [8]
  * - Delta time clamped to prevent huge jumps after tab switch
- * - setAnimationLoop for render loop [1]
- * - Speed line geometry/material disposed on removal
+ * - StreamDrawUsage recommended for frequently updated buffers [7]
  *
- * NIGHT MODE:
- * - Toggling night mode updates scene background color via getTheme()
+ * GAMEPLAY:
+ * - Continue with coins
+ * - No freeze after correct answers in endless mode
+ * - Speed dial 1-10
+ * - Daily mode deterministic card selection
+ * - Coin magnet animation
+ * - Camera shake on wrong/obstacle
+ * - Speed lines at high speeds
+ * - Achievement checking at end of run
  */
 
 import * as THREE from 'three';
 import { storage } from '../storage.js';
 import { audio } from '../audio.js';
 import { getTheme } from './themes.js';
-import { buildTrack, spawnEnvProp } from './track.js';
+import { getRandomSkin } from './skins.js';
+import { buildTrack, spawnEnvProp, updateRunningLights, updateAtmosphericParticles, calculateTargetFOV, updateCameraFOV, calculateCameraLean, getStreakVisualIntensity } from './track.js';
 import { buildPlayer, getPlayerLimbs } from './player.js';
 import { setupInput } from './input.js';
 import { pickCard, spawnGates, updateGateHighlights, flashGateResult, resolveStats, validateCardNoLeak } from './gates.js';
@@ -57,52 +49,31 @@ import { CONTINUE_COST } from './shopdata.js';
 var LANE_X = [-3, 0, 3];
 
 /**
- * Recursively dispose all geometries and materials in a Three.js object tree.
- * Per Three.js best practices: "Dispose geometries, materials, and textures
- * explicitly" when removing objects from the scene [1].
- * Forum consensus confirms: traverse children, dispose geometry, dispose
- * material (including its textures), then remove from scene [4].
+ * Recursively dispose all geometries and materials in a Three.js object.
+ * "Removing an object from the scene doesn't free its GPU memory.
+ * Dispose geometries, materials, and textures explicitly" [8]
  */
 function disposeObject(obj) {
   if (!obj) return;
-  // Traverse children first
   if (obj.children) {
     for (var i = obj.children.length - 1; i >= 0; i--) {
       disposeObject(obj.children[i]);
     }
   }
-  // Dispose geometry
-  if (obj.geometry) {
-    obj.geometry.dispose();
-  }
-  // Dispose material(s)
+  if (obj.geometry) obj.geometry.dispose();
   if (obj.material) {
     if (Array.isArray(obj.material)) {
       for (var m = 0; m < obj.material.length; m++) {
-        disposeMaterial(obj.material[m]);
+        if (obj.material[m].map) obj.material[m].map.dispose();
+        obj.material[m].dispose();
       }
     } else {
-      disposeMaterial(obj.material);
+      if (obj.material.map) obj.material.map.dispose();
+      obj.material.dispose();
     }
   }
 }
 
-function disposeMaterial(material) {
-  if (!material) return;
-  // Dispose any textures on the material
-  var keys = Object.keys(material);
-  for (var i = 0; i < keys.length; i++) {
-    var value = material[keys[i]];
-    if (value && typeof value === 'object' && typeof value.dispose === 'function' && value.isTexture) {
-      value.dispose();
-    }
-  }
-  material.dispose();
-}
-
-/**
- * Remove an object from scene and dispose its GPU resources.
- */
 function removeAndDispose(scene, obj) {
   scene.remove(obj);
   disposeObject(obj);
@@ -117,6 +88,12 @@ class Game {
     this.playerGroup = null;
     this.limbs = null;
     this.trailSystem = null;
+
+    // Skin system
+    this.currentSkin = null;
+    this.trackRefs = null; // { runningLights, particlePool, particleStates }
+    this.elapsedTime = 0;
+    this.cameraLeanX = 0;
 
     this.running = false;
     this.paused = false;
@@ -174,9 +151,9 @@ class Game {
     this.waitingForNext = false;
     this.nextEncounterTimer = 0;
 
-    // Camera shake
     this.shakeTimer = 0;
     this.cameraBasePos = new THREE.Vector3(0, 4.5, 10);
+    this.baseFOV = 70;
 
     // Callbacks
     this.onEncounterStart = null;
@@ -193,10 +170,12 @@ class Game {
   init() {
     this.clock = new THREE.Clock();
     this.scene = new THREE.Scene();
-    var theme = getTheme(storage.get('selectedSubjects'));
-    this.scene.background = new THREE.Color(theme.bg);
 
-    this.camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.1, 300);
+    // Use a default skin for initial scene setup
+    this.currentSkin = getRandomSkin();
+    this.scene.background = new THREE.Color(this.currentSkin.colors.bg);
+
+    this.camera = new THREE.PerspectiveCamera(this.baseFOV, innerWidth / innerHeight, 0.1, 300);
     this.camera.position.copy(this.cameraBasePos);
     this.camera.lookAt(0, 1, -20);
 
@@ -206,19 +185,13 @@ class Game {
     this.renderer.shadowMap.enabled = true;
     document.getElementById('gameContainer').appendChild(this.renderer.domElement);
 
-    // Lights
-    this.scene.add(new THREE.AmbientLight(0xffffff, 0.8));
-    var dir = new THREE.DirectionalLight(0xffffff, 0.9);
-    dir.position.set(5, 20, 10);
-    dir.castShadow = true;
-    this.scene.add(dir);
-    this.scene.add(new THREE.HemisphereLight(0x8888ff, 0x002244, 0.5));
-
-    buildTrack(this.scene, theme);
+    // Build initial track with skin
+    this.trackRefs = buildTrack(this.scene, this.currentSkin);
     this.rebuildPlayer();
     this.trailSystem = new TrailSystem(this.scene);
     setupInput(this.renderer, this);
 
+    // "Use setAnimationLoop for cleaner render loops" [8]
     var self = this;
     this.renderer.setAnimationLoop(function () {
       var dt = self.clock.getDelta();
@@ -269,7 +242,6 @@ class Game {
     document.getElementById('rushEl').classList.add('show');
   }
 
-  // Update night mode on the 3D scene (called when setting is toggled)
   updateNightMode() {
     var theme = getTheme(storage.get('selectedSubjects'));
     this.scene.background.set(theme.bg);
@@ -290,8 +262,9 @@ class Game {
     this.playerY = 0;
     this.jumpVel = 0;
     this.legPhase = 0;
+    this.elapsedTime = 0;
+    this.cameraLeanX = 0;
 
-    // Speed: 1-10. Level 1 = 3.75 u/s, Level 10 = 37.5 u/s
     var mapped = 3.75 + (this.userSpeed - 1) * 3.75;
     this.speed = mode === 'study' ? 3 : mapped;
     this.baseSpeed = this.speed;
@@ -328,10 +301,21 @@ class Game {
       this.playerGroup.position.set(0, 0, 0);
     }
 
+    // Clean up old track and objects
     this.cleanupObjects();
-    var theme = getTheme(storage.get('selectedSubjects'));
-    this.scene.background.set(theme.bg);
+    this.cleanupTrack();
+
+    // Select a random skin for this run
+    this.currentSkin = getRandomSkin();
+
+    // Build new track with the selected skin
+    this.trackRefs = buildTrack(this.scene, this.currentSkin);
+
+    // Reset camera
     this.camera.position.copy(this.cameraBasePos);
+    this.camera.fov = this.baseFOV;
+    this.camera.updateProjectionMatrix();
+
     this.clock.getDelta();
     this.rebuildPlayer();
   }
@@ -361,6 +345,27 @@ class Game {
     this.speedLines = [];
   }
 
+  cleanupTrack() {
+    // Remove all track-related objects (walls, arches, ground, particles, lights)
+    // We need to clear the entire scene except the camera
+    var toRemove = [];
+    this.scene.traverse(function (child) {
+      if (child.isMesh || child.isGroup || child.isLine) {
+        toRemove.push(child);
+      }
+      if (child.isLight && child.userData.skinLight) {
+        toRemove.push(child);
+      }
+    });
+    for (var i = 0; i < toRemove.length; i++) {
+      if (toRemove[i].parent === this.scene) {
+        removeAndDispose(this.scene, toRemove[i]);
+      }
+    }
+    // Clear track refs
+    this.trackRefs = null;
+  }
+
   collectPowerup(type) {
     var duration;
     switch (type) {
@@ -379,7 +384,6 @@ class Game {
     this.shakeTimer = 0.15;
   }
 
-  // Continue with coins — called from UI when player chooses to continue
   doContinue() {
     if (storage.spendCoins(CONTINUE_COST)) {
       this.lives = 1;
@@ -388,7 +392,6 @@ class Game {
       this.paused = false;
       audio.play('continue');
       this.clock.getDelta();
-      // Resume by spawning next encounter
       this.spawnEncounter();
       return true;
     }
@@ -396,7 +399,6 @@ class Game {
   }
 
   spawnEncounter() {
-    // For daily mode, pass the encounter index for deterministic selection
     var card = pickCard(this.recentIds, this.mode, this.encountersDone);
     if (!card) { this.endRun(); return; }
 
@@ -415,13 +417,17 @@ class Game {
       }
     }
 
-    // Answer-leak validation (log only, don't block)
     validateCardNoLeak(card, this.gates);
 
     this.gateZ = -60;
     for (var g = 0; g < this.gateMeshes.length; g++) removeAndDispose(this.scene, this.gateMeshes[g]);
-    var theme = getTheme(storage.get('selectedSubjects'));
-    this.gateMeshes = spawnGates(this.scene, this.gates, this.currentLane, theme);
+
+    // Use skin colors for gate theming
+    var gateTheme = {
+      glow: this.currentSkin.colors.gateGlow,
+      gate: this.currentSkin.colors.gateBase
+    };
+    this.gateMeshes = spawnGates(this.scene, this.gates, this.currentLane, gateTheme);
 
     this.gatesActive = true;
     this.rushing = false;
@@ -429,12 +435,11 @@ class Game {
     document.getElementById('rushEl').classList.remove('show');
 
     if (this.onEncounterStart) this.onEncounterStart(card, this.gates);
-
-    // TTS with speed-adaptive rate
     audio.speak(card.bw.join('. '), this.speed);
   }
 
-// === PART 1 END === (Part 2 continues with resolveEncounter, update, endRun)
+// === Part 1 ends here. Part 2 continues with resolveEncounter, update, endRun ===
+
   resolveEncounter() {
     this.gatesActive = false;
     document.getElementById('rushEl').classList.remove('show');
@@ -464,7 +469,6 @@ class Game {
       // Streak milestones with escalating sounds
       if (this.streak % 5 === 0) {
         this.multiplier = Math.min(this.multiplier + 1, 8);
-        // Use escalating pitch sound based on streak count
         audio.playStreakSound(this.streak);
         if (this.onStreakMilestone) this.onStreakMilestone(this.streak, this.multiplier);
       } else {
@@ -497,15 +501,11 @@ class Game {
         this.feedbackTimer = 1.5;
         if (this.onEncounterResolve) this.onEncounterResolve(card, ok);
 
-        // Check if player can continue
         var canContinue = !this.continued && storage.get('coins') >= CONTINUE_COST;
-
         if (canContinue && this.onContinuePrompt) {
-          // Pause the game and show continue prompt
           this.running = false;
           this.onContinuePrompt(CONTINUE_COST);
         } else {
-          // No continue available — end run after delay
           var self = this;
           setTimeout(function () { self.endRun(); }, 500);
         }
@@ -516,7 +516,6 @@ class Game {
     this.feedbackTimer = 1.2;
 
     // Timing for next encounter
-    // No freeze for correct in endless — near-instant transition
     if (this.mode === 'study') {
       this.teachTimer = 3.5;
       this.waitingForNext = true;
@@ -526,7 +525,7 @@ class Game {
       this.waitingForNext = true;
       this.nextEncounterTimer = 1.0;
     } else {
-      // CORRECT in endless/daily: near-instant
+      // Correct in endless/daily: near-instant
       this.waitingForNext = true;
       this.nextEncounterTimer = 0.05;
     }
@@ -540,11 +539,9 @@ class Game {
   }
 
   transitionToNextEncounter() {
-    // Clean old gates with proper GPU disposal [1]
     for (var m = 0; m < this.gateMeshes.length; m++) removeAndDispose(this.scene, this.gateMeshes[m]);
     this.gateMeshes = [];
 
-    // Maybe spawn obstacle between encounters
     if (this.mode !== 'study' && Math.random() < 0.4) {
       spawnObstacle(this.scene, this.obstacleMeshes);
     }
@@ -552,7 +549,11 @@ class Game {
     this.spawnEncounter();
   }
 
+  // ===== MAIN UPDATE LOOP =====
+
   update(dt) {
+    this.elapsedTime += dt;
+
     var currentSpeed = this.powerups.slow > 0 ? this.speed * 0.6 : this.speed;
     var rushMult = this.rushing ? 3.0 : 1.0;
     var move = currentSpeed * rushMult * dt;
@@ -598,7 +599,6 @@ class Game {
         this.limbs.leftArm.rotation.x = -sw * 0.8;
         this.limbs.rightArm.rotation.x = sw * 0.8;
       }
-      // Cape flutter animation for superhero avatar
       if (this.limbs.cape) {
         this.limbs.cape.rotation.x = 0.15 + Math.sin(this.legPhase * 1.5) * 0.1;
       }
@@ -616,19 +616,31 @@ class Game {
       );
     }
 
-    // ===== CAMERA SHAKE =====
-    // Based on the GDC "Juicing Your Cameras With Math" approach:
-    // use a trauma value that decays over time, with noise-based
-    // offset applied to camera position [7]
+    // ===== CAMERA EFFECTS =====
+
+    // Camera shake
     if (this.shakeTimer > 0) {
       this.shakeTimer -= dt;
       var intensity = this.shakeTimer * 3;
       this.camera.position.x = this.cameraBasePos.x + (Math.random() - 0.5) * intensity;
       this.camera.position.y = this.cameraBasePos.y + (Math.random() - 0.5) * intensity * 0.5;
     } else {
-      this.camera.position.x = this.cameraBasePos.x;
+      // Camera lane lean — subtle X offset when switching lanes
+      this.cameraLeanX = calculateCameraLean(this.cameraLeanX, this.targetLane, dt, this.cameraBasePos.x);
+      this.camera.position.x = this.cameraLeanX;
       this.camera.position.y = this.cameraBasePos.y;
     }
+
+    // Speed-reactive FOV — widens at higher speeds for tunnel-vision effect
+    var streakVis = getStreakVisualIntensity(this.streak);
+    var targetFOV = calculateTargetFOV(
+      this.baseSpeed,
+      currentSpeed * rushMult,
+      this.baseFOV,
+      this.baseFOV + 15 + streakVis.fovBoost,
+      this.rushing
+    );
+    updateCameraFOV(this.camera, targetFOV, dt, 2.0);
 
     // ===== GATES =====
     if (this.gatesActive) {
@@ -671,19 +683,35 @@ class Game {
     }
 
     // Move env props toward camera with parallax depth (70% speed)
-    // and remove + dispose when past camera
     for (var ei = this.envPropMeshes.length - 1; ei >= 0; ei--) {
       var ep = this.envPropMeshes[ei];
       ep.position.z += move * 0.7;
       ep.rotation.y += dt * 0.3;
       if (ep.position.z > 10) {
-        // Proper GPU disposal per Three.js best practices [1]
         removeAndDispose(this.scene, ep);
         this.envPropMeshes.splice(ei, 1);
       }
     }
 
-    // ===== SPEED LINES (at high speeds and during rush) =====
+    // ===== ANIMATED TRACK ELEMENTS =====
+
+    // Running lights — forward-sequencing wave animation
+    if (this.trackRefs && this.trackRefs.runningLights) {
+      updateRunningLights(this.trackRefs.runningLights, this.elapsedTime, currentSpeed * rushMult);
+    }
+
+    // Atmospheric particles — drift, bob, rotate, and recycle
+    if (this.trackRefs && this.trackRefs.particlePool) {
+      updateAtmosphericParticles(
+        this.trackRefs.particlePool,
+        this.trackRefs.particleStates,
+        dt,
+        move,
+        this.elapsedTime
+      );
+    }
+
+    // ===== SPEED LINES =====
     var speedRatio = this.speed / this.baseSpeed;
     if (speedRatio > 1.3 || this.rushing) {
       this.speedLineTimer -= dt;
@@ -711,7 +739,7 @@ class Game {
       }
     }
 
-    // Move and clean speed lines with proper disposal [1]
+    // Move and clean speed lines
     for (var sli = this.speedLines.length - 1; sli >= 0; sli--) {
       var sl = this.speedLines[sli];
       sl.position.z += move * 2.5;
@@ -740,7 +768,6 @@ class Game {
               audio.play('wrong');
               this.triggerShake();
               if (this.lives <= 0 && this.mode !== 'study') {
-                // Check continue availability
                 var canCont = !this.continued && storage.get('coins') >= CONTINUE_COST;
                 if (canCont && this.onContinuePrompt) {
                   this.running = false;
@@ -752,7 +779,6 @@ class Game {
             }
           }
         }
-        // Proper GPU disposal [1]
         removeAndDispose(this.scene, ob);
         this.obstacleMeshes.splice(oi, 1);
       }
@@ -768,7 +794,7 @@ class Game {
         c.rotation.y += dt * 3;
       } else if (c.userData.type === 'powerup') {
         c.rotation.y += dt * 2;
-        c.position.y = 1.5 + Math.sin(Date.now() * 0.003 + ci) * 0.3;
+        c.position.y = 1.5 + Math.sin(this.elapsedTime * 3 + ci) * 0.3;
       }
 
       // Remove if past player
@@ -778,17 +804,17 @@ class Game {
         continue;
       }
 
-      // Collection check (generous zone for good game feel)
+      // Collection check with generous zone
       if (c.position.z > -3 && c.position.z < 2 && !c.userData.collected) {
         var inLane = c.userData.lane === this.currentLane;
         var magnetActive = this.powerups.magnet > 0;
         var closeEnough = Math.abs(LANE_X[this.currentLane] - c.position.x) < 1.8;
 
-        // Coin magnet animation: when magnet active, coins curve toward player
+        // Coin magnet animation: coins curve toward player
         if (magnetActive && !inLane && c.position.z > -5) {
           var playerX = this.playerGroup.position.x;
           var coinX = c.position.x;
-          c.position.x += (playerX - coinX) * dt * 5; // smooth curve toward player
+          c.position.x += (playerX - coinX) * dt * 5;
         }
 
         if (inLane || closeEnough || magnetActive) {
@@ -822,7 +848,7 @@ class Game {
       this.speed = Math.min(this.baseSpeed * 2.0, this.baseSpeed + this.encountersDone * 0.3);
     }
 
-    // ===== HUD UPDATE CALLBACK =====
+    // ===== HUD UPDATE =====
     if (this.onHudUpdate) this.onHudUpdate();
   }
 
@@ -845,6 +871,8 @@ class Game {
     document.getElementById('pauseOverlay').classList.remove('active');
     document.getElementById('rushEl').classList.remove('show');
     this.camera.position.copy(this.cameraBasePos);
+    this.camera.fov = this.baseFOV;
+    this.camera.updateProjectionMatrix();
 
     // Save coins with lifetime tracking
     storage.addCoins(this.coins);
@@ -860,7 +888,7 @@ class Game {
 
     storage.incrementQuest('q_25enc', this.encountersDone);
 
-    // Check achievements at end of run
+    // Check achievements
     var runData = {
       score: this.score,
       perfect: this.wrong === 0 && this.correct > 0,
@@ -868,12 +896,11 @@ class Game {
     };
     var newAchievements = storage.checkAchievements(runData);
 
-    // Notify UI about newly unlocked achievements
     if (newAchievements.length > 0 && this.onAchievementUnlocked) {
       this.onAchievementUnlocked(newAchievements);
     }
 
-    // Proper GPU cleanup of all game objects [1]
+    // Clean up game objects (not track — that's cleaned on next start)
     this.cleanupObjects();
 
     if (this.onRunEnd) this.onRunEnd();
