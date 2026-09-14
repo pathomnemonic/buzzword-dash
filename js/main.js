@@ -1,22 +1,13 @@
 /**
  * main.js — Initialization and wiring
  *
- * All features through Final Phase + new additions:
- * - All game callbacks wired (encounters, achievements, continue,
- *   score popup, streak, powerup, skin name, night mode, equipment)
- * - Easter egg global functions (edit/delete/flag cards)
- * - Konami code handled in ui.js
- * - Title tap easter egg handled in ui.js
- * - Daily login reward handled in ui.js
- * - Music auto-start on first interaction
- * - Skin ambient audio started on run start
- * - Touch prevention during gameplay
- * - Retroactive achievement check on load
- *
- * NEW:
- * - Home character preview (Item 3): creates HomeCharacter instance,
- *   wires it to ui.js, starts/stops with home screen
- * - Home character rebuild on equipment change
+ * FIXED: Button bindings updated to match new index.html structure
+ * - .btn-play and .mode-btn instead of .mode-card
+ * - Collapsible subject toggle
+ * - Persistent bottom nav show/hide during gameplay
+ * - Home character fullscreen scene using game renderer
+ * - Music auto-start on first interaction (moved toggle to settings)
+ * - Onboarding flow for first run
  */
 
 import { game } from './game/engine.js';
@@ -54,7 +45,7 @@ window.UI_flagCard = function (cardId) {
         var flags = storage.get('flags');
         flags.push({ cardId: cardId, reason: reason, date: Date.now() });
         storage.set('flags', flags);
-        alert('Card flagged \u2014 thank you for helping improve the game!');
+        alert('Card flagged — thank you for helping improve the game!');
     }
 };
 
@@ -63,16 +54,9 @@ window.UI_flagCard = function (cardId) {
 var homeCharacter = null;
 
 function initHomeCharacter() {
-    var container = document.getElementById('homeCharacterContainer');
-    if (!container) return;
-
     homeCharacter = new HomeCharacter();
-    homeCharacter.init('homeCharacterContainer');
-
-    // Wire to UI so it can start/stop animation on screen changes
+    homeCharacter.init(game.renderer);
     ui.homeCharacter = homeCharacter;
-
-    // Start animation since we begin on the home screen
     homeCharacter.startAnimation();
 }
 
@@ -97,14 +81,14 @@ function startMode(mode) {
         }
     }
 
+    // Stop home scene, hide nav, start game
+    if (homeCharacter) homeCharacter.stopAnimation();
+    showBottomNav(false);
+
     game.start(mode);
     ui.hideAll();
     ui.showHud();
 
-    // Stop home character during gameplay to save GPU
-    if (homeCharacter) homeCharacter.stopAnimation();
-
-    // Start skin-specific ambient audio
     if (game.currentSkin) {
         audio.startAmbient(game.currentSkin.name);
     }
@@ -112,6 +96,37 @@ function startMode(mode) {
     ui.countdown(function () {
         game.go();
     });
+}
+
+// ===== BOTTOM NAV VISIBILITY =====
+
+function showBottomNav(visible) {
+    var nav = document.getElementById('bottomNav');
+    if (nav) {
+        if (visible) {
+            nav.classList.remove('hidden');
+        } else {
+            nav.classList.add('hidden');
+        }
+    }
+}
+
+// ===== COLLAPSIBLE SECTIONS =====
+
+function setupCollapsibles() {
+    var subjectToggle = document.getElementById('subjectToggle');
+    var subjectBody = document.getElementById('subjectBody');
+    var subjectArrow = document.getElementById('subjectArrow');
+
+    if (subjectToggle && subjectBody) {
+        subjectToggle.addEventListener('click', function () {
+            var isOpen = subjectBody.style.display !== 'none';
+            subjectBody.style.display = isOpen ? 'none' : 'block';
+            if (subjectArrow) {
+                subjectArrow.classList.toggle('open', !isOpen);
+            }
+        });
+    }
 }
 
 // ===== MAIN INITIALIZATION =====
@@ -122,18 +137,19 @@ function init() {
     game.init();
     ui.init();
 
-    // Initialize home character preview
+    // Initialize home character (uses game's renderer for fullscreen background)
     initHomeCharacter();
+
+    // Setup collapsible sections
+    setupCollapsibles();
 
     // ===== WIRE GAME -> UI CALLBACKS =====
 
-    // New encounter: show buzzwords and answer choices
     game.onEncounterStart = function (card, gates) {
         ui.showBuzzwords(card);
         ui.showAnswerChoices(gates);
     };
 
-    // Encounter resolved: show feedback
     game.onEncounterResolve = function (card, wasCorrect) {
         ui.showFeedback(card, wasCorrect);
         if (game.mode === 'study' && wasCorrect) {
@@ -141,13 +157,16 @@ function init() {
         }
     };
 
-    // Run ended: show post-run review
     game.onRunEnd = function () {
         ui.hideHud();
         ui.hideAnswerChoices();
-
-        // Stop ambient audio
         audio.stopAmbient();
+
+        // Show bottom nav again
+        showBottomNav(true);
+
+        // Restart home character background
+        if (homeCharacter) homeCharacter.startAnimation();
 
         ui.showPostRun(game);
 
@@ -165,34 +184,28 @@ function init() {
         }
     };
 
-    // HUD update every frame
     game.onHudUpdate = function () {
         ui.updateHud(game);
     };
 
-    // Floating score popup + coin burst on correct answer
     game.onScorePopup = function (points) {
         ui.showScorePopup(points);
         ui.showCoinBurst();
     };
 
-    // Streak milestone display
     game.onStreakMilestone = function (streak, multiplier) {
         ui.showStreakMilestone(streak, multiplier);
     };
 
-    // Power-up collected: notification + screen-edge glow
     game.onPowerupCollected = function (type) {
         ui.showPowerupNotification(type);
         ui.showPowerupGlow(type);
     };
 
-    // Achievement unlocked: banner notification
     game.onAchievementUnlocked = function (achievementIds) {
         ui.showAchievementNotification(achievementIds);
     };
 
-    // Continue prompt: show overlay when player dies but can pay
     game.onContinuePrompt = function (cost) {
         ui.showContinuePrompt(
             cost,
@@ -210,33 +223,64 @@ function init() {
         );
     };
 
-    // Skin selected: show track name popup
     game.onSkinSelected = function (skinName) {
         ui.showTrackName(skinName);
     };
 
-    // Equipment changed in shop: rebuild 3D player model + home character
+    // Equipment changed: rebuild game player + home character
     ui.onEquipChange = function () {
         game.buildPlayer();
-        // Also rebuild home character so it reflects new equipment
-        if (homeCharacter) {
-            homeCharacter.rebuildCharacter();
-        }
+        if (homeCharacter) homeCharacter.rebuildCharacter();
     };
 
-    // Night mode toggled: update 3D scene
     ui.onNightModeChange = function () {
         game.updateNightMode();
     };
 
-    // ===== BIND MODE-SELECT BUTTONS =====
+    // ===== BIND PLAY BUTTON (the big green one) =====
+
+    var playBtn = document.querySelector('.btn-play');
+    if (playBtn) {
+        playBtn.addEventListener('click', function () {
+            var mode = this.dataset.mode || 'endless';
+            startMode(mode);
+        });
+    }
+
+    // ===== BIND SECONDARY MODE BUTTONS =====
+
+    document.querySelectorAll('.mode-btn').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var mode = this.dataset.mode;
+            if (mode) startMode(mode);
+        });
+    });
+
+    // ===== ALSO BIND OLD .mode-card FOR BACKWARD COMPAT =====
 
     document.querySelectorAll('.mode-card').forEach(function (card) {
         card.addEventListener('click', function () {
             var mode = this.dataset.mode;
-            startMode(mode);
+            if (mode) startMode(mode);
         });
     });
+
+    // ===== BIND MULTIPLAYER BUTTON =====
+
+    var mpBtn = document.getElementById('multiplayerBtn');
+    if (mpBtn) {
+        mpBtn.addEventListener('click', function () {
+            var overlay = document.getElementById('multiplayerOverlay');
+            if (overlay) overlay.classList.add('active');
+        });
+    }
+    var mpCloseBtn = document.getElementById('mpCloseBtn');
+    if (mpCloseBtn) {
+        mpCloseBtn.addEventListener('click', function () {
+            var overlay = document.getElementById('multiplayerOverlay');
+            if (overlay) overlay.classList.remove('active');
+        });
+    }
 
     // ===== BIND PAUSE / RESUME / END RUN =====
 
@@ -248,18 +292,19 @@ function init() {
     });
     document.getElementById('endRunBtn').addEventListener('click', function () {
         audio.stopAmbient();
+        showBottomNav(true);
+        if (homeCharacter) homeCharacter.startAnimation();
         game.endRun();
     });
 
-    // ===== MUSIC AUTO-START =====
+    // ===== MUSIC AUTO-START (now on by default) =====
 
-    if (storage.get('musicOn')) {
-        document.addEventListener('click', function startMusicOnce() {
+    document.addEventListener('click', function startMusicOnce() {
+        if (storage.get('musicOn')) {
             audio.startMusic();
-            document.getElementById('musicToggleBtn').textContent = '\uD83C\uDFB5 Music: ON';
-            document.removeEventListener('click', startMusicOnce);
-        }, { once: true });
-    }
+        }
+        document.removeEventListener('click', startMusicOnce);
+    }, { once: true });
 
     // ===== PREVENT PULL-TO-REFRESH =====
 
