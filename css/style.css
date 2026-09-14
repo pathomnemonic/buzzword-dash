@@ -938,3 +938,24 @@ html, body {
     background: rgba(30, 15, 70, 0.85);
     color: #ffffff;
 }
+
+.opponent-hud {
+  margin: 4px auto 0;
+  max-width: 360px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 10px;
+  border-radius: 12px;
+  background: rgba(20, 10, 60, 0.82);
+  border: 1px solid rgba(255, 68, 170, 0.35);
+  box-shadow: 0 0 14px rgba(255, 68, 170, 0.12);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  backdrop-filter: blur(8px);
+}
+.opponent-hud b {
+  color: var(--accent-pink);
+}
