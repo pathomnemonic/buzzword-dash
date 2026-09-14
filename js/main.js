@@ -1,13 +1,15 @@
 /**
  * main.js — Initialization and wiring
  *
- * FIXED: Button bindings updated to match new index.html structure
- * - .btn-play and .mode-btn instead of .mode-card
+ * All features:
+ * - Button bindings for new HTML structure (.btn-play, .mode-btn)
  * - Collapsible subject toggle
  * - Persistent bottom nav show/hide during gameplay
  * - Home character fullscreen scene using game renderer
- * - Music auto-start on first interaction (moved toggle to settings)
- * - Onboarding flow for first run
+ * - Music auto-start on first interaction
+ * - First-run onboarding flow
+ * - Multiplayer UI wiring (PeerJS)
+ * - All game callbacks wired
  */
 
 import { game } from './game/engine.js';
@@ -45,7 +47,7 @@ window.UI_flagCard = function (cardId) {
         var flags = storage.get('flags');
         flags.push({ cardId: cardId, reason: reason, date: Date.now() });
         storage.set('flags', flags);
-        alert('Card flagged — thank you for helping improve the game!');
+        alert('Card flagged \u2014 thank you for helping improve the game!');
     }
 };
 
@@ -129,6 +131,55 @@ function setupCollapsibles() {
     }
 }
 
+// ===== FIRST-RUN ONBOARDING =====
+
+function showOnboarding() {
+    var overlay = document.getElementById('onboardingOverlay');
+    if (!overlay) return;
+    var pages = [
+        { icon: '\u26A1', title: 'Welcome to Buzzword Dash!', text: 'See medical buzzwords, then swipe into the correct diagnosis gate to score points!', hand: '\uD83D\uDC46' },
+        { icon: '\uD83D\uDC46', title: 'Swipe to Move', text: 'Swipe left/right to switch lanes. Swipe up to jump, down to slide. Double-tap to rush for bonus points!', hand: '\uD83D\uDC48\uD83D\uDC49' },
+        { icon: '\uD83C\uDFC6', title: 'Build Your Streak!', text: 'Correct answers build your streak and multiplier. Collect coins, unlock avatars, and climb the leaderboard!', hand: '' }
+    ];
+    var currentPage = 0;
+
+    function renderPage() {
+        var p = pages[currentPage];
+        var icon = document.getElementById('obIcon');
+        var title = document.getElementById('obTitle');
+        var text = document.getElementById('obText');
+        var hand = document.getElementById('obHand');
+        var dots = document.getElementById('obDots');
+        var btn = document.getElementById('obNextBtn');
+        if (icon) icon.textContent = p.icon;
+        if (title) title.textContent = p.title;
+        if (text) text.textContent = p.text;
+        if (hand) { hand.textContent = p.hand; hand.style.display = p.hand ? 'inline-block' : 'none'; }
+        if (dots) {
+            dots.innerHTML = pages.map(function (_, i) {
+                return '<div class="tut-dot ' + (i === currentPage ? 'active' : '') + '"></div>';
+            }).join('');
+        }
+        if (btn) btn.textContent = currentPage === pages.length - 1 ? 'Let\'s Go! \u2713' : 'Next \u2192';
+    }
+
+    overlay.classList.add('active');
+    renderPage();
+
+    var btn = document.getElementById('obNextBtn');
+    if (btn) {
+        btn.addEventListener('click', function () {
+            currentPage++;
+            if (currentPage >= pages.length) {
+                overlay.classList.remove('active');
+                storage.set('firstRunComplete', true);
+            } else {
+                renderPage();
+            }
+        });
+    }
+}
+
 // ===== MAIN INITIALIZATION =====
 
 function init() {
@@ -142,6 +193,11 @@ function init() {
 
     // Setup collapsible sections
     setupCollapsibles();
+
+    // First-run onboarding
+    if (!storage.get('firstRunComplete')) {
+        showOnboarding();
+    }
 
     // ===== WIRE GAME -> UI CALLBACKS =====
 
@@ -265,13 +321,59 @@ function init() {
         });
     });
 
-    // ===== BIND MULTIPLAYER BUTTON =====
+    // ===== MULTIPLAYER BUTTON =====
 
     var mpBtn = document.getElementById('multiplayerBtn');
     if (mpBtn) {
         mpBtn.addEventListener('click', function () {
             var overlay = document.getElementById('multiplayerOverlay');
-            if (overlay) overlay.classList.add('active');
+            var content = document.getElementById('mpContent');
+            if (!overlay || !content) return;
+            overlay.classList.add('active');
+            content.innerHTML =
+                '<button class="btn btn-green btn-block" id="mpHostBtn">\uD83C\uDFAE Host Game</button>' +
+                '<div style="text-align:center;margin:8px 0;color:var(--text-muted)">\u2014 or \u2014</div>' +
+                '<input type="text" id="mpJoinCode" placeholder="Enter room code" style="width:100%;padding:10px;border-radius:var(--radius-sm);background:rgba(30,15,70,0.6);color:#fff;border:1px solid rgba(187,102,255,0.15);font-size:16px;text-align:center;letter-spacing:4px;margin-bottom:8px;text-transform:uppercase">' +
+                '<button class="btn btn-primary btn-block" id="mpJoinBtn">Join Game</button>';
+
+            document.getElementById('mpHostBtn').addEventListener('click', async function () {
+                var mp = await import('./multiplayer.js');
+                await mp.multiplayer.init();
+                content.innerHTML = '<div class="mp-status">Creating room...</div>';
+                mp.multiplayer.hostGame(function (code) {
+                    content.innerHTML =
+                        '<div class="mp-status">Waiting for opponent...</div>' +
+                        '<div class="mp-room-code">' + code + '</div>' +
+                        '<div class="mp-status">Share this code with a friend</div>';
+                });
+                mp.multiplayer.onConnected = function () {
+                    content.innerHTML = '<div class="mp-status" style="color:var(--accent-green)">\u2705 Opponent connected!</div>' +
+                        '<div class="mp-status">Start a run to begin the match.</div>';
+                };
+                mp.multiplayer.onError = function (err) {
+                    content.innerHTML = '<div class="mp-status" style="color:var(--accent-red)">\u274C ' + err + '</div>' +
+                        '<button class="btn btn-outline btn-block" onclick="document.getElementById(\'multiplayerOverlay\').classList.remove(\'active\')">Close</button>';
+                };
+            });
+
+            document.getElementById('mpJoinBtn').addEventListener('click', async function () {
+                var code = document.getElementById('mpJoinCode').value.trim();
+                if (!code || code.length < 4) { alert('Enter a valid room code'); return; }
+                var mp = await import('./multiplayer.js');
+                await mp.multiplayer.init();
+                content.innerHTML = '<div class="mp-status">Connecting to ' + code.toUpperCase() + '...</div>';
+                mp.multiplayer.joinGame(code, function () {
+                    // Connection attempt started
+                });
+                mp.multiplayer.onConnected = function () {
+                    content.innerHTML = '<div class="mp-status" style="color:var(--accent-green)">\u2705 Connected!</div>' +
+                        '<div class="mp-status">Start a run to begin the match.</div>';
+                };
+                mp.multiplayer.onError = function (err) {
+                    content.innerHTML = '<div class="mp-status" style="color:var(--accent-red)">\u274C ' + err + '</div>' +
+                        '<button class="btn btn-outline btn-block" onclick="document.getElementById(\'multiplayerOverlay\').classList.remove(\'active\')">Close</button>';
+                };
+            });
         });
     }
     var mpCloseBtn = document.getElementById('mpCloseBtn');
