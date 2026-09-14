@@ -42,6 +42,14 @@
     <div class="hud-pill" id="hudSpeedTimer" style="display:none">⏱ 0.00s</div>
     <div class="hud-pill clickable" id="pauseBtn">⏸</div>
   </div>
+  <!-- OPPONENT HUD (multiplayer only, hidden by default) -->
+  <div id="opponentHud" class="opponent-hud" style="display:none">
+    <span>🎮 Rival</span>
+    <span>⭐ <b id="opponentScore">0</b></span>
+    <span>🔥 <b id="opponentStreak">0</b></span>
+    <span>✅ <b id="opponentCorrect">0</b></span>
+    <span>❌ <b id="opponentWrong">0</b></span>
+  </div>
   <div id="buzzBox"><div id="buzzText">GET READY</div></div>
   <div id="answerRow">
     <div class="answer-choice" id="ans0"><span class="lane-label">← LEFT</span><span id="ansText0"></span></div>
