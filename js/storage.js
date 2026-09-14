@@ -1,12 +1,15 @@
 /**
  * storage.js — LocalStorage persistence layer
  *
- * All Phases through Final:
- * - equipped.trail slot
- * - Achievement tracking (unlocked achievements array)
- * - totalCoins (lifetime coins earned, separate from spendable coins)
+ * All features through Final Phase:
+ * - equipped.trail slot for trail effects
+ * - totalCoins lifetime tracking (separate from spendable coins)
+ * - Achievement unlock/check system with checkAchievements(runData)
  * - Card lastSeen timestamp for spaced repetition
+ * - Daily login reward tracking (lastLoginDate, loginStreak)
+ * - Konami code one-time flag
  * - Deep merge on load to handle new fields added in updates
+ * - Safe upgrade handling for old saves
  */
 
 var STORAGE_KEY = 'buzzword_dash_v1';
@@ -22,10 +25,12 @@ var DEFAULTS = {
   dailyStreak: 0,
   dailyDone: false,
   lastDaily: null,
+
   selectedSubjects: [
     "Neurology", "Cardiology", "Nephrology",
     "Psychiatry", "Gastroenterology", "Infectious Disease"
   ],
+
   userSpeed: 1,
   masterVolume: 0.7,
   sfxVolume: 0.8,
@@ -34,8 +39,10 @@ var DEFAULTS = {
   ttsEnabled: false,
   ttsRate: 1.0,
   reducedMotion: false,
+
   cardStats: {},
   subjectStats: {},
+
   ownedItems: ["avatar_intern", "hat_none", "trail_none", "gear_none"],
   equipped: {
     skin: "avatar_intern",
@@ -43,10 +50,18 @@ var DEFAULTS = {
     trail: "trail_none",
     gear: "gear_none"
   },
+
   questProgress: {},
   flags: [],
   achievements: [],
-  continuesUsed: 0
+  continuesUsed: 0,
+
+  // Daily login reward
+  lastLoginDate: null,
+  loginStreak: 0,
+
+  // Easter eggs
+  konamiUsed: false
 };
 
 function deepClone(obj) {
@@ -64,7 +79,7 @@ class Storage {
       if (raw) {
         var parsed = JSON.parse(raw);
         this.data = {};
-        // Merge with defaults so new fields are always present
+        // Deep merge with defaults so new fields are always present
         for (var key in DEFAULTS) {
           if (parsed[key] !== undefined) {
             this.data[key] = parsed[key];
@@ -74,18 +89,17 @@ class Storage {
               : DEFAULTS[key];
           }
         }
-        // Ensure equipped has trail slot (for upgrades from old saves)
-        if (!this.data.equipped.trail) {
-          this.data.equipped.trail = 'trail_none';
-        }
+        // Ensure equipped has all slots (for upgrades from old saves)
+        if (!this.data.equipped.trail) this.data.equipped.trail = 'trail_none';
+        if (!this.data.equipped.gear) this.data.equipped.gear = 'gear_none';
         // Ensure totalCoins exists
-        if (this.data.totalCoins === undefined) {
-          this.data.totalCoins = this.data.coins || 100;
-        }
+        if (this.data.totalCoins === undefined) this.data.totalCoins = this.data.coins || 100;
         // Ensure achievements array exists
-        if (!Array.isArray(this.data.achievements)) {
-          this.data.achievements = [];
-        }
+        if (!Array.isArray(this.data.achievements)) this.data.achievements = [];
+        // Ensure login fields exist
+        if (this.data.lastLoginDate === undefined) this.data.lastLoginDate = null;
+        if (this.data.loginStreak === undefined) this.data.loginStreak = 0;
+        if (this.data.konamiUsed === undefined) this.data.konamiUsed = false;
       } else {
         this.data = deepClone(DEFAULTS);
       }
@@ -112,6 +126,7 @@ class Storage {
   }
 
   // --- Card stats with lastSeen for spaced repetition ---
+
   getCardStat(cardId) {
     var stats = this.get('cardStats');
     return stats[cardId] || { seen: 0, correct: 0, wrong: 0, lastSeen: 0 };
@@ -129,6 +144,7 @@ class Storage {
   }
 
   // --- Subject stats ---
+
   getSubjectStat(subject) {
     var stats = this.get('subjectStats');
     return stats[subject] || { correct: 0, wrong: 0 };
@@ -144,6 +160,7 @@ class Storage {
   }
 
   // --- Shop ---
+
   ownsItem(itemId) {
     return this.get('ownedItems').indexOf(itemId) >= 0;
   }
@@ -155,7 +172,6 @@ class Storage {
     var owned = this.get('ownedItems');
     owned.push(itemId);
     this.set('ownedItems', owned);
-    // Track first purchase achievement
     this.unlockAchievement('ach_buy_first');
     return true;
   }
@@ -167,10 +183,10 @@ class Storage {
   }
 
   // --- Coins with lifetime tracking ---
+
   addCoins(amount) {
     this.set('coins', this.get('coins') + amount);
     this.set('totalCoins', this.get('totalCoins') + amount);
-    // Check coin achievements
     var total = this.get('totalCoins');
     if (total >= 500) this.unlockAchievement('ach_coins_500');
     if (total >= 5000) this.unlockAchievement('ach_coins_5000');
@@ -184,6 +200,7 @@ class Storage {
   }
 
   // --- Quest progress ---
+
   getQuestProgress(questId) {
     var p = this.get('questProgress');
     return p[questId] || 0;
@@ -196,6 +213,7 @@ class Storage {
   }
 
   // --- Achievements ---
+
   hasAchievement(achId) {
     return this.get('achievements').indexOf(achId) >= 0;
   }
@@ -205,14 +223,13 @@ class Storage {
     var achs = this.get('achievements');
     achs.push(achId);
     this.set('achievements', achs);
-    return true; // newly unlocked
+    return true;
   }
 
   getAchievementCount() {
     return this.get('achievements').length;
   }
 
-  // --- Check achievements based on current stats ---
   checkAchievements(runData) {
     var newlyUnlocked = [];
 
@@ -235,7 +252,7 @@ class Storage {
     if (bs >= 25 && this.unlockAchievement('ach_streak_25')) newlyUnlocked.push('ach_streak_25');
     if (bs >= 50 && this.unlockAchievement('ach_streak_50')) newlyUnlocked.push('ach_streak_50');
 
-    // Run-specific checks (if runData provided)
+    // Run-specific checks
     if (runData) {
       if (runData.score >= 1000 && this.unlockAchievement('ach_score_1000')) newlyUnlocked.push('ach_score_1000');
       if (runData.score >= 5000 && this.unlockAchievement('ach_score_5000')) newlyUnlocked.push('ach_score_5000');
@@ -256,6 +273,7 @@ class Storage {
   }
 
   // --- Daily check ---
+
   checkDailyReset() {
     var last = this.get('lastDaily');
     var today = new Date().toDateString();
@@ -266,6 +284,7 @@ class Storage {
   }
 
   // --- Full reset ---
+
   reset() {
     this.data = deepClone(DEFAULTS);
     this.save();
