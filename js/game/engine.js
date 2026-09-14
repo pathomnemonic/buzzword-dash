@@ -317,6 +317,7 @@ class Game {
     this.camera.updateProjectionMatrix();
     this.clock.getDelta();
     this.rebuildPlayer();
+    audio.startAmbient(this.currentSkin.name);
     if (this.onSkinSelected) this.onSkinSelected(this.currentSkin.name);
   }
 
@@ -782,7 +783,7 @@ class Game {
     if (this.mode !== 'study') {
       this.speed = Math.min(this.baseSpeed * 2.0, this.baseSpeed + this.encountersDone * 0.3);
     }
-
+    audio.updateSpeedPitch(this.baseSpeed, this.speed);
     // ===== HUD UPDATE =====
     if (this.onHudUpdate) this.onHudUpdate();
   }
