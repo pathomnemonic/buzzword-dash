@@ -1,36 +1,3 @@
-/**
- * engine.js — Main game class with skin system integration
- *
- * All features through Final Phase + Skin System:
- *
- * SKIN INTEGRATION:
- * - Random skin selected at start of each run via getRandomSkin()
- * - Track built using skin-specific geometry builders
- * - Atmospheric particles updated every frame via object pool
- * - Running lights animated with forward-sequencing wave
- * - Camera FOV widens at higher speeds for tunnel-vision effect
- * - Camera leans subtly when switching lanes
- * - Streak visual intensity affects glow and particle density
- *
- * PERFORMANCE:
- * - setAnimationLoop for render loop [8]
- * - Object pooling for particles [8]
- * - GPU resource disposal on object removal [8]
- * - MeshBasicMaterial for all decorative elements [8]
- * - Delta time clamped to prevent huge jumps after tab switch
- * - StreamDrawUsage recommended for frequently updated buffers [7]
- *
- * GAMEPLAY:
- * - Continue with coins
- * - No freeze after correct answers in endless mode
- * - Speed dial 1-10
- * - Daily mode deterministic card selection
- * - Coin magnet animation
- * - Camera shake on wrong/obstacle
- * - Speed lines at high speeds
- * - Achievement checking at end of run
- */
-
 import * as THREE from 'three';
 import { storage } from '../storage.js';
 import { audio } from '../audio.js';
@@ -42,23 +9,17 @@ import { setupInput } from './input.js';
 import { pickCard, spawnGates, updateGateHighlights, flashGateResult, resolveStats, validateCardNoLeak } from './gates.js';
 import { spawnObstacle, spawnCoinBatch, spawnPowerup } from './obstacles.js';
 import { TrailSystem } from './trails.js';
+import { PowerUpFX } from './powerupfx.js';
 
 export { SHOP_ITEMS, QUESTS, AVATARS, ACHIEVEMENTS, CONTINUE_COST } from './shopdata.js';
 import { CONTINUE_COST } from './shopdata.js';
 
 var LANE_X = [-3, 0, 3];
 
-/**
- * Recursively dispose all geometries and materials in a Three.js object.
- * "Removing an object from the scene doesn't free its GPU memory.
- * Dispose geometries, materials, and textures explicitly" [8]
- */
 function disposeObject(obj) {
   if (!obj) return;
   if (obj.children) {
-    for (var i = obj.children.length - 1; i >= 0; i--) {
-      disposeObject(obj.children[i]);
-    }
+    for (var i = obj.children.length - 1; i >= 0; i--) disposeObject(obj.children[i]);
   }
   if (obj.geometry) obj.geometry.dispose();
   if (obj.material) {
@@ -88,18 +49,20 @@ class Game {
     this.playerGroup = null;
     this.limbs = null;
     this.trailSystem = null;
+    this.powerupFX = null;
 
-    // Skin system
     this.currentSkin = null;
-    this.trackRefs = null; // { runningLights, particlePool, particleStates }
+    this.trackRefs = null;
     this.elapsedTime = 0;
     this.cameraLeanX = 0;
+    this.playerTilt = 0;
 
     this.running = false;
     this.paused = false;
     this.mode = 'endless';
     this.currentLane = 1;
     this.targetLane = 1;
+    this.prevLane = 1;
 
     this.jumping = false;
     this.jumpVel = 0;
@@ -124,6 +87,8 @@ class Game {
     this.continued = false;
 
     this.rushing = false;
+    this.rushStacks = 0;
+    this.maxRushStacks = 3;
     this.rushBonus = 0;
 
     this.card = null;
@@ -142,7 +107,8 @@ class Game {
     this.feedbackTimer = 0;
     this.teachTimer = 0;
 
-    this.powerups = { shield: 0, slow: 0, double: 0, magnet: 0 };
+    this.powerups = { shield: 0, double: 0, magnet: 0, autoPilot: 0, scoreFrenzy: 0 };
+    this.autoPilotGatesLeft = 0;
 
     this.coinSpawnTimer = 0;
     this.powerupSpawnTimer = 0;
@@ -155,7 +121,6 @@ class Game {
     this.cameraBasePos = new THREE.Vector3(0, 4.5, 10);
     this.baseFOV = 70;
 
-    // Callbacks
     this.onEncounterStart = null;
     this.onEncounterResolve = null;
     this.onRunEnd = null;
@@ -165,13 +130,12 @@ class Game {
     this.onPowerupCollected = null;
     this.onAchievementUnlocked = null;
     this.onContinuePrompt = null;
+    this.onSkinSelected = null;
   }
 
   init() {
     this.clock = new THREE.Clock();
     this.scene = new THREE.Scene();
-
-    // Use a default skin for initial scene setup
     this.currentSkin = getRandomSkin();
     this.scene.background = new THREE.Color(this.currentSkin.colors.bg);
 
@@ -185,20 +149,17 @@ class Game {
     this.renderer.shadowMap.enabled = true;
     document.getElementById('gameContainer').appendChild(this.renderer.domElement);
 
-    // Build initial track with skin
     this.trackRefs = buildTrack(this.scene, this.currentSkin);
     this.rebuildPlayer();
     this.trailSystem = new TrailSystem(this.scene);
+    this.powerupFX = new PowerUpFX(this.scene);
     setupInput(this.renderer, this);
 
-    // "Use setAnimationLoop for cleaner render loops" [8]
     var self = this;
     this.renderer.setAnimationLoop(function () {
       var dt = self.clock.getDelta();
       var clamped = dt > 0.1 ? 0.016 : dt;
-      if (self.running && !self.paused) {
-        self.update(clamped);
-      }
+      if (self.running && !self.paused) self.update(clamped);
       self.renderer.render(self.scene, self.camera);
     });
 
@@ -234,97 +195,22 @@ class Game {
     }
   }
 
-  startRush() {
-    if (this.rushing || !this.gatesActive) return;
-    this.rushing = true;
-    this.rushBonus = Math.max(0, Math.floor(Math.max(0, (-this.gateZ - 10)) / 50 * 80));
-    audio.play('rush');
-    document.getElementById('rushEl').classList.add('show');
+  addRushStack() {
+    if (!this.gatesActive) return;
+    if (this.rushStacks < this.maxRushStacks) {
+      this.rushStacks++;
+      this.rushing = true;
+      var distanceBonus = Math.max(0, (-this.gateZ - 10)) / 50;
+      this.rushBonus = Math.floor(distanceBonus * 40 * this.rushStacks);
+      audio.play('rush');
+      document.getElementById('rushEl').textContent = '\u26A1 RUSH \u00D7' + this.rushStacks + ' \u26A1';
+      document.getElementById('rushEl').classList.add('show');
+    }
   }
 
   updateNightMode() {
     var theme = getTheme(storage.get('selectedSubjects'));
     this.scene.background.set(theme.bg);
-  }
-
-  start(mode) {
-    this.mode = mode;
-    this.userSpeed = storage.get('userSpeed') || 1;
-    if (mode === 'daily' && storage.get('dailyDone')) {
-      alert('Daily round already completed today!');
-      return;
-    }
-
-    this.currentLane = 1;
-    this.targetLane = 1;
-    this.jumping = false;
-    this.sliding = false;
-    this.playerY = 0;
-    this.jumpVel = 0;
-    this.legPhase = 0;
-    this.elapsedTime = 0;
-    this.cameraLeanX = 0;
-
-    var mapped = 3.75 + (this.userSpeed - 1) * 3.75;
-    this.speed = mode === 'study' ? 3 : mapped;
-    this.baseSpeed = this.speed;
-
-    this.score = 0;
-    this.streak = 0;
-    this.bestStreak = 0;
-    this.multiplier = 1;
-    this.coins = 0;
-    this.encountersDone = 0;
-    this.correct = 0;
-    this.wrong = 0;
-    this.lives = mode === 'study' ? 99 : 3;
-    this.continued = false;
-    this.rushing = false;
-    this.rushBonus = 0;
-    this.card = null;
-    this.gatesActive = false;
-    this.waitingForNext = false;
-    this.nextEncounterTimer = 0;
-    this.coinSpawnTimer = 0;
-    this.powerupSpawnTimer = 8;
-    this.envPropSpawnTimer = 0.5;
-    this.speedLineTimer = 0;
-    this.shakeTimer = 0;
-    this.runCards = [];
-    this.recentIds = [];
-    this.feedbackTimer = 0;
-    this.teachTimer = 0;
-    this.powerups = { shield: 0, slow: 0, double: 0, magnet: 0 };
-
-    if (this.playerGroup) {
-      this.playerGroup.scale.set(1, 1, 1);
-      this.playerGroup.position.set(0, 0, 0);
-    }
-
-    // Clean up old track and objects
-    this.cleanupObjects();
-    this.cleanupTrack();
-
-    // Select a random skin for this run
-    this.currentSkin = getRandomSkin();
-
-    // Build new track with the selected skin
-    this.trackRefs = buildTrack(this.scene, this.currentSkin);
-
-    // Reset camera
-    this.camera.position.copy(this.cameraBasePos);
-    this.camera.fov = this.baseFOV;
-    this.camera.updateProjectionMatrix();
-
-    this.clock.getDelta();
-    this.rebuildPlayer();
-  }
-
-  go() {
-    this.running = true;
-    this.paused = false;
-    this.clock.getDelta();
-    this.spawnEncounter();
   }
 
   cleanupObjects() {
@@ -346,43 +232,32 @@ class Game {
   }
 
   cleanupTrack() {
-    // Remove all track-related objects (walls, arches, ground, particles, lights)
-    // We need to clear the entire scene except the camera
     var toRemove = [];
+    var self = this;
     this.scene.traverse(function (child) {
-      if (child.isMesh || child.isGroup || child.isLine) {
-        toRemove.push(child);
-      }
-      if (child.isLight && child.userData.skinLight) {
-        toRemove.push(child);
-      }
+      if (child === self.camera) return;
+      if (child.isMesh || child.isGroup || child.isLine) toRemove.push(child);
+      if (child.isLight && child.userData.skinLight) toRemove.push(child);
     });
     for (var i = 0; i < toRemove.length; i++) {
-      if (toRemove[i].parent === this.scene) {
-        removeAndDispose(this.scene, toRemove[i]);
-      }
+      if (toRemove[i].parent === this.scene) removeAndDispose(this.scene, toRemove[i]);
     }
-    // Clear track refs
     this.trackRefs = null;
   }
 
   collectPowerup(type) {
-    var duration;
     switch (type) {
-      case 'shield': duration = 999; break;
-      case 'slow': duration = 8; break;
-      case 'double': duration = 15; break;
-      case 'magnet': duration = 10; break;
-      default: duration = 10;
+      case 'shield': this.powerups.shield = 999; break;
+      case 'magnet': this.powerups.magnet = 10; break;
+      case 'double': this.powerups.double = 15; break;
+      case 'autoPilot': this.autoPilotGatesLeft = 3; this.powerups.autoPilot = 999; break;
+      case 'scoreFrenzy': this.powerups.scoreFrenzy = 8; break;
     }
-    this.powerups[type] = duration;
     audio.play('powerup');
     if (this.onPowerupCollected) this.onPowerupCollected(type);
   }
 
-  triggerShake() {
-    this.shakeTimer = 0.15;
-  }
+  triggerShake() { this.shakeTimer = 0.15; }
 
   doContinue() {
     if (storage.spendCoins(CONTINUE_COST)) {
@@ -398,51 +273,101 @@ class Game {
     return false;
   }
 
+  start(mode) {
+    this.mode = mode;
+    this.userSpeed = storage.get('userSpeed') || 1;
+    if (mode === 'daily' && storage.get('dailyDone')) {
+      alert('Daily round already completed today!');
+      return;
+    }
+    this.currentLane = 1; this.targetLane = 1; this.prevLane = 1;
+    this.jumping = false; this.sliding = false;
+    this.playerY = 0; this.jumpVel = 0; this.legPhase = 0;
+    this.elapsedTime = 0; this.cameraLeanX = 0; this.playerTilt = 0;
+    var mapped = 3.75 + (this.userSpeed - 1) * 3.75;
+    this.speed = mode === 'study' ? 3 : mapped;
+    this.baseSpeed = this.speed;
+    this.score = 0; this.streak = 0; this.bestStreak = 0;
+    this.multiplier = 1; this.coins = 0;
+    this.encountersDone = 0; this.correct = 0; this.wrong = 0;
+    this.lives = mode === 'study' ? 99 : 3;
+    this.continued = false;
+    this.rushing = false; this.rushStacks = 0; this.rushBonus = 0;
+    this.card = null; this.gatesActive = false;
+    this.waitingForNext = false; this.nextEncounterTimer = 0;
+    this.coinSpawnTimer = 0; this.powerupSpawnTimer = 8;
+    this.envPropSpawnTimer = 0.5; this.speedLineTimer = 0;
+    this.shakeTimer = 0;
+    this.runCards = []; this.recentIds = [];
+    this.feedbackTimer = 0; this.teachTimer = 0;
+    this.powerups = { shield: 0, double: 0, magnet: 0, autoPilot: 0, scoreFrenzy: 0 };
+    this.autoPilotGatesLeft = 0;
+    if (this.playerGroup) {
+      this.playerGroup.scale.set(1, 1, 1);
+      this.playerGroup.position.set(0, 0, 0);
+      this.playerGroup.rotation.set(0, 0, 0);
+    }
+    this.cleanupObjects();
+    this.cleanupTrack();
+    if (this.powerupFX) this.powerupFX.hideAll();
+    this.currentSkin = getRandomSkin();
+    this.trackRefs = buildTrack(this.scene, this.currentSkin);
+    this.camera.position.copy(this.cameraBasePos);
+    this.camera.fov = this.baseFOV;
+    this.camera.updateProjectionMatrix();
+    this.clock.getDelta();
+    this.rebuildPlayer();
+    if (this.onSkinSelected) this.onSkinSelected(this.currentSkin.name);
+  }
+
+  go() {
+    this.running = true;
+    this.paused = false;
+    this.clock.getDelta();
+    this.spawnEncounter();
+  }
+
   spawnEncounter() {
     var card = pickCard(this.recentIds, this.mode, this.encountersDone);
     if (!card) { this.endRun(); return; }
-
     this.card = card;
     this.recentIds.push(card.id);
     if (this.recentIds.length > 10) this.recentIds.shift();
-
     var correctLane = Math.floor(Math.random() * 3);
     var distractors = card.d.slice();
     this.gates = [];
     for (var i = 0; i < 3; i++) {
-      if (i === correctLane) {
-        this.gates.push({ label: card.ans, correct: true });
-      } else {
-        this.gates.push({ label: distractors.shift() || 'N/A', correct: false });
-      }
+      if (i === correctLane) this.gates.push({ label: card.ans, correct: true });
+      else this.gates.push({ label: distractors.shift() || 'N/A', correct: false });
     }
-
     validateCardNoLeak(card, this.gates);
-
+    // Auto-pilot: move to correct lane
+    if (this.autoPilotGatesLeft > 0) {
+      for (var ap = 0; ap < this.gates.length; ap++) {
+        if (this.gates[ap].correct) { this.targetLane = ap; break; }
+      }
+      this.autoPilotGatesLeft--;
+      if (this.autoPilotGatesLeft <= 0) this.powerups.autoPilot = 0;
+    }
     this.gateZ = -60;
     for (var g = 0; g < this.gateMeshes.length; g++) removeAndDispose(this.scene, this.gateMeshes[g]);
-
-    // Use skin colors for gate theming
-    var gateTheme = {
-      glow: this.currentSkin.colors.gateGlow,
-      gate: this.currentSkin.colors.gateBase
-    };
+    var gateTheme = { glow: this.currentSkin.colors.gateGlow, gate: this.currentSkin.colors.gateBase };
     this.gateMeshes = spawnGates(this.scene, this.gates, this.currentLane, gateTheme);
-
     this.gatesActive = true;
     this.rushing = false;
-    this.waitingForNext = false;
+    this.rushStacks = 0;
     document.getElementById('rushEl').classList.remove('show');
-
     if (this.onEncounterStart) this.onEncounterStart(card, this.gates);
     audio.speak(card.bw.join('. '), this.speed);
   }
 
-// === Part 1 ends here. Part 2 continues with resolveEncounter, update, endRun ===
+// === Part 1 ends here. Part 2 continues with resolveEncounter ===
 
   resolveEncounter() {
     this.gatesActive = false;
     document.getElementById('rushEl').classList.remove('show');
+    this.rushing = false;
+    this.rushStacks = 0;
 
     var gate = this.gates[this.currentLane];
     var card = this.card;
@@ -461,12 +386,13 @@ class Game {
 
       var mult = this.powerups.double > 0 ? 2 : 1;
       pointsEarned = (10 + this.streak * 2) * this.multiplier * mult;
-      if (this.rushing) pointsEarned += this.rushBonus;
+      if (this.rushBonus > 0) pointsEarned += this.rushBonus;
       pointsEarned += Math.floor(this.userSpeed * 3);
       this.score += pointsEarned;
-      this.coins += 1 + Math.floor(this.streak / 3);
 
-      // Streak milestones with escalating sounds
+      var coinMult = this.powerups.scoreFrenzy > 0 ? 5 : 1;
+      this.coins += (1 + Math.floor(this.streak / 3)) * coinMult;
+
       if (this.streak % 5 === 0) {
         this.multiplier = Math.min(this.multiplier + 1, 8);
         audio.playStreakSound(this.streak);
@@ -480,6 +406,7 @@ class Game {
       for (var i = 0; i < this.gateMeshes.length; i++) {
         if (this.gates[i].correct) {
           this.gateMeshes[i].children[0].material.color.setHex(0x00cc55);
+          this.gateMeshes[i].children[0].material.opacity = 1.0;
         }
       }
 
@@ -496,26 +423,36 @@ class Game {
       flashGateResult(this.gateMeshes, this.gates, this.currentLane);
       this.triggerShake();
 
-      // Check for death
-      if (this.lives <= 0 && this.mode !== 'study') {
-        this.feedbackTimer = 1.5;
-        if (this.onEncounterResolve) this.onEncounterResolve(card, ok);
+      // Shield absorbs hit
+      if (this.lives < 0 && this.powerups.shield > 0) {
+        this.lives = 0;
+      }
 
-        var canContinue = !this.continued && storage.get('coins') >= CONTINUE_COST;
-        if (canContinue && this.onContinuePrompt) {
-          this.running = false;
-          this.onContinuePrompt(CONTINUE_COST);
+      if (this.lives <= 0 && this.mode !== 'study') {
+        // Check if shield saves us
+        if (this.powerups.shield > 0) {
+          this.powerups.shield = 0;
+          this.lives = 1;
+          if (this.powerupFX) this.powerupFX.shatterShield(this.playerGroup.position);
         } else {
-          var self = this;
-          setTimeout(function () { self.endRun(); }, 500);
+          this.feedbackTimer = 1.5;
+          if (this.onEncounterResolve) this.onEncounterResolve(card, ok);
+          var canContinue = !this.continued && storage.get('coins') >= CONTINUE_COST;
+          if (canContinue && this.onContinuePrompt) {
+            this.running = false;
+            this.onContinuePrompt(CONTINUE_COST);
+          } else {
+            var self = this;
+            setTimeout(function () { self.endRun(); }, 500);
+          }
+          return;
         }
-        return;
       }
     }
 
     this.feedbackTimer = 1.2;
+    this.rushBonus = 0;
 
-    // Timing for next encounter
     if (this.mode === 'study') {
       this.teachTimer = 3.5;
       this.waitingForNext = true;
@@ -525,7 +462,6 @@ class Game {
       this.waitingForNext = true;
       this.nextEncounterTimer = 1.0;
     } else {
-      // Correct in endless/daily: near-instant
       this.waitingForNext = true;
       this.nextEncounterTimer = 0.05;
     }
@@ -541,32 +477,53 @@ class Game {
   transitionToNextEncounter() {
     for (var m = 0; m < this.gateMeshes.length; m++) removeAndDispose(this.scene, this.gateMeshes[m]);
     this.gateMeshes = [];
-
     if (this.mode !== 'study' && Math.random() < 0.4) {
       spawnObstacle(this.scene, this.obstacleMeshes);
     }
-
     this.spawnEncounter();
   }
 
-  // ===== MAIN UPDATE LOOP =====
-
   update(dt) {
     this.elapsedTime += dt;
-
-    var currentSpeed = this.powerups.slow > 0 ? this.speed * 0.6 : this.speed;
-    var rushMult = this.rushing ? 3.0 : 1.0;
+    var currentSpeed = this.speed;
+    var rushMult = 1.0 + this.rushStacks;
     var move = currentSpeed * rushMult * dt;
 
     // ===== PLAYER MOVEMENT =====
+
+    // Magnetic lane snap: ease-in-out instead of linear lerp
     var targetX = LANE_X[this.targetLane];
-    this.playerGroup.position.x += (targetX - this.playerGroup.position.x) * Math.min(1, 10 * dt);
+    var dx = targetX - this.playerGroup.position.x;
+    var snapSpeed = Math.min(1, 12 * dt);
+    // Ease-in-out: accelerate then decelerate
+    var absDx = Math.abs(dx);
+    if (absDx > 0.01) {
+      var easeMultiplier = absDx > 1.5 ? 1.5 : (absDx < 0.3 ? 0.5 : 1.0);
+      this.playerGroup.position.x += dx * snapSpeed * easeMultiplier;
+    } else {
+      this.playerGroup.position.x = targetX;
+    }
     this.currentLane = this.targetLane;
 
-    // Jump
+    // Body tilt when switching lanes
+    var tiltTarget = 0;
+    if (this.targetLane !== this.prevLane) {
+      tiltTarget = (this.targetLane - this.prevLane) * -0.15;
+    }
+    this.playerTilt += (tiltTarget - this.playerTilt) * Math.min(1, 8 * dt);
+    if (Math.abs(this.playerTilt) < 0.005) {
+      this.playerTilt = 0;
+      this.prevLane = this.targetLane;
+    }
+    this.playerGroup.rotation.z = this.playerTilt;
+
+    // Jump with hang time at peak
     if (this.jumping) {
       this.playerY += this.jumpVel * dt;
-      this.jumpVel -= 30 * dt;
+      // Reduced gravity at peak for hang time feel
+      var gravity = 30;
+      if (Math.abs(this.jumpVel) < 3) gravity = 18; // hang time zone
+      this.jumpVel -= gravity * dt;
       if (this.playerY <= 0) {
         this.playerY = 0;
         this.jumping = false;
@@ -607,13 +564,12 @@ class Game {
 
     // ===== TRAIL SYSTEM =====
     if (this.trailSystem) {
-      this.trailSystem.update(
-        dt,
-        this.playerGroup.position.x,
-        this.playerGroup.position.y,
-        this.playerGroup.position.z,
-        this.streak
-      );
+      this.trailSystem.update(dt, this.playerGroup.position.x, this.playerGroup.position.y, this.playerGroup.position.z, this.streak);
+    }
+
+    // ===== POWER-UP VISUAL EFFECTS =====
+    if (this.powerupFX) {
+      this.powerupFX.update(dt, this.playerGroup.position, this.powerups, this.rushStacks);
     }
 
     // ===== CAMERA EFFECTS =====
@@ -625,21 +581,15 @@ class Game {
       this.camera.position.x = this.cameraBasePos.x + (Math.random() - 0.5) * intensity;
       this.camera.position.y = this.cameraBasePos.y + (Math.random() - 0.5) * intensity * 0.5;
     } else {
-      // Camera lane lean — subtle X offset when switching lanes
+      // Camera lane lean
       this.cameraLeanX = calculateCameraLean(this.cameraLeanX, this.targetLane, dt, this.cameraBasePos.x);
       this.camera.position.x = this.cameraLeanX;
       this.camera.position.y = this.cameraBasePos.y;
     }
 
-    // Speed-reactive FOV — widens at higher speeds for tunnel-vision effect
+    // Speed-reactive FOV
     var streakVis = getStreakVisualIntensity(this.streak);
-    var targetFOV = calculateTargetFOV(
-      this.baseSpeed,
-      currentSpeed * rushMult,
-      this.baseFOV,
-      this.baseFOV + 15 + streakVis.fovBoost,
-      this.rushing
-    );
+    var targetFOV = calculateTargetFOV(this.baseSpeed, currentSpeed * rushMult, this.baseFOV, this.baseFOV + 15 + streakVis.fovBoost, this.rushing);
     updateCameraFOV(this.camera, targetFOV, dt, 2.0);
 
     // ===== GATES =====
@@ -647,6 +597,17 @@ class Game {
       this.gateZ += move;
       for (var gi = 0; gi < this.gateMeshes.length; gi++) {
         this.gateMeshes[gi].position.z = this.gateZ;
+        // Gate approach drama: scale up as they get closer
+        var approachProgress = 1.0 - Math.max(0, -this.gateZ) / 60;
+        var gateScale = 1.0 + approachProgress * 0.08;
+        this.gateMeshes[gi].scale.set(gateScale, gateScale, gateScale);
+        // Active lane gate glows brighter
+        var frame = this.gateMeshes[gi].children[0];
+        if (gi === this.currentLane) {
+          frame.material.opacity = 0.6 + approachProgress * 0.3;
+        } else {
+          frame.material.opacity = 0.4 - approachProgress * 0.15;
+        }
       }
       updateGateHighlights(this.gateMeshes, this.currentLane);
       if (this.gateZ >= 0) this.resolveEncounter();
@@ -681,8 +642,6 @@ class Game {
       spawnEnvProp(this.scene, this.envPropMeshes, storage.get('selectedSubjects'));
       this.envPropSpawnTimer = 1.5 + Math.random() * 2;
     }
-
-    // Move env props toward camera with parallax depth (70% speed)
     for (var ei = this.envPropMeshes.length - 1; ei >= 0; ei--) {
       var ep = this.envPropMeshes[ei];
       ep.position.z += move * 0.7;
@@ -694,21 +653,13 @@ class Game {
     }
 
     // ===== ANIMATED TRACK ELEMENTS =====
-
-    // Running lights — forward-sequencing wave animation
-    if (this.trackRefs && this.trackRefs.runningLights) {
-      updateRunningLights(this.trackRefs.runningLights, this.elapsedTime, currentSpeed * rushMult);
-    }
-
-    // Atmospheric particles — drift, bob, rotate, and recycle
-    if (this.trackRefs && this.trackRefs.particlePool) {
-      updateAtmosphericParticles(
-        this.trackRefs.particlePool,
-        this.trackRefs.particleStates,
-        dt,
-        move,
-        this.elapsedTime
-      );
+    if (this.trackRefs) {
+      if (this.trackRefs.runningLights) {
+        updateRunningLights(this.trackRefs.runningLights, this.elapsedTime, currentSpeed * rushMult);
+      }
+      if (this.trackRefs.particlePool) {
+        updateAtmosphericParticles(this.trackRefs.particlePool, this.trackRefs.particleStates, dt, move, this.elapsedTime);
+      }
     }
 
     // ===== SPEED LINES =====
@@ -718,28 +669,15 @@ class Game {
       if (this.speedLineTimer <= 0) {
         var lineLen = 2 + Math.random() * 4;
         var lineOpacity = 0.15 + (speedRatio - 1) * 0.1;
-        if (this.rushing) lineOpacity = 0.4;
-        var lineMat = new THREE.MeshBasicMaterial({
-          color: 0xffffff,
-          transparent: true,
-          opacity: Math.min(lineOpacity, 0.5)
-        });
-        var speedLine = new THREE.Mesh(
-          new THREE.BoxGeometry(0.02, 0.02, lineLen),
-          lineMat
-        );
-        speedLine.position.set(
-          (Math.random() - 0.5) * 12,
-          Math.random() * 6,
-          -30 - Math.random() * 20
-        );
+        if (this.rushing) lineOpacity = 0.3 + this.rushStacks * 0.1;
+        var lineMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: Math.min(lineOpacity, 0.6) });
+        var speedLine = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.02, lineLen), lineMat);
+        speedLine.position.set((Math.random() - 0.5) * 12, Math.random() * 6, -30 - Math.random() * 20);
         this.scene.add(speedLine);
         this.speedLines.push(speedLine);
-        this.speedLineTimer = this.rushing ? 0.02 : (0.1 / Math.max(speedRatio, 1));
+        this.speedLineTimer = this.rushing ? 0.02 / Math.max(this.rushStacks, 1) : 0.1 / Math.max(speedRatio, 1);
       }
     }
-
-    // Move and clean speed lines
     for (var sli = this.speedLines.length - 1; sli >= 0; sli--) {
       var sl = this.speedLines[sli];
       sl.position.z += move * 2.5;
@@ -763,6 +701,7 @@ class Game {
           if (!dodged) {
             if (this.powerups.shield > 0) {
               this.powerups.shield = 0;
+              if (this.powerupFX) this.powerupFX.shatterShield(this.playerGroup.position);
             } else {
               this.lives--;
               audio.play('wrong');
@@ -789,7 +728,6 @@ class Game {
       var c = this.coinMeshes[ci];
       c.position.z += move;
 
-      // Animate
       if (c.userData.type === 'coin') {
         c.rotation.y += dt * 3;
       } else if (c.userData.type === 'powerup') {
@@ -797,36 +735,32 @@ class Game {
         c.position.y = 1.5 + Math.sin(this.elapsedTime * 3 + ci) * 0.3;
       }
 
-      // Remove if past player
       if (c.position.z > 3) {
         removeAndDispose(this.scene, c);
         this.coinMeshes.splice(ci, 1);
         continue;
       }
 
-      // Collection check with generous zone
       if (c.position.z > -3 && c.position.z < 2 && !c.userData.collected) {
         var inLane = c.userData.lane === this.currentLane;
         var magnetActive = this.powerups.magnet > 0;
         var closeEnough = Math.abs(LANE_X[this.currentLane] - c.position.x) < 1.8;
 
-        // Coin magnet animation: coins curve toward player
+        // Coin magnet animation
         if (magnetActive && !inLane && c.position.z > -5) {
           var playerX = this.playerGroup.position.x;
-          var coinX = c.position.x;
-          c.position.x += (playerX - coinX) * dt * 5;
+          c.position.x += (playerX - c.position.x) * dt * 5;
         }
 
         if (inLane || closeEnough || magnetActive) {
           c.userData.collected = true;
-
           if (c.userData.type === 'powerup') {
             this.collectPowerup(c.userData.powerupType);
           } else {
-            this.coins++;
+            var coinValue = this.powerups.scoreFrenzy > 0 ? 5 : 1;
+            this.coins += coinValue;
             audio.play('coin');
           }
-
           removeAndDispose(this.scene, c);
           this.coinMeshes.splice(ci, 1);
         }
@@ -834,9 +768,10 @@ class Game {
     }
 
     // ===== POWER-UP TIMERS =====
-    var puKeys = ['shield', 'slow', 'double', 'magnet'];
-    for (var pk = 0; pk < puKeys.length; pk++) {
-      if (this.powerups[puKeys[pk]] > 0) this.powerups[puKeys[pk]] -= dt;
+    var timedPowerups = ['double', 'magnet', 'scoreFrenzy'];
+    for (var pk = 0; pk < timedPowerups.length; pk++) {
+      var key = timedPowerups[pk];
+      if (this.powerups[key] > 0) this.powerups[key] -= dt;
     }
 
     // ===== FEEDBACK TIMERS =====
@@ -851,6 +786,8 @@ class Game {
     // ===== HUD UPDATE =====
     if (this.onHudUpdate) this.onHudUpdate();
   }
+
+// === Part 2 ends here. Part 3 continues with togglePause, resume, endRun, export ===
 
   togglePause() {
     if (!this.running) return;
@@ -870,9 +807,19 @@ class Game {
     this.paused = false;
     document.getElementById('pauseOverlay').classList.remove('active');
     document.getElementById('rushEl').classList.remove('show');
+
+    // Reset camera
     this.camera.position.copy(this.cameraBasePos);
     this.camera.fov = this.baseFOV;
     this.camera.updateProjectionMatrix();
+
+    // Reset player rotation from tilt
+    if (this.playerGroup) {
+      this.playerGroup.rotation.z = 0;
+    }
+
+    // Hide power-up visual effects
+    if (this.powerupFX) this.powerupFX.hideAll();
 
     // Save coins with lifetime tracking
     storage.addCoins(this.coins);
@@ -900,7 +847,7 @@ class Game {
       this.onAchievementUnlocked(newAchievements);
     }
 
-    // Clean up game objects (not track — that's cleaned on next start)
+    // Clean up game objects
     this.cleanupObjects();
 
     if (this.onRunEnd) this.onRunEnd();
