@@ -184,33 +184,42 @@ class UI {
     }
 
     bindNavigation() {
-        var self = this;
-        document.querySelectorAll('.nav-item').forEach(function (item) {
-            item.addEventListener('click', function () { self.show(item.dataset.screen); });
-        });
-        document.querySelectorAll('.back-btn').forEach(function (btn) {
-            btn.addEventListener('click', function () { self.show('screenHome'); });
-        });
-        document.getElementById('settingsBtn').addEventListener('click', function () { self.show('screenSettings'); });
-        document.getElementById('shopBtn').addEventListener('click', function () { self.show('screenShop'); });
-        document.getElementById('questBtn').addEventListener('click', function () { self.show('screenQuests'); });
-        document.getElementById('achievementsBtn').addEventListener('click', function () { self.show('screenAchievements'); });
-        document.getElementById('myCardsBtn').addEventListener('click', function () { self.show('screenMyCards'); self.renderCustomCardList(); });
-        document.getElementById('tutorialBtn').addEventListener('click', function () { self.showTutorial(); });
-        document.getElementById('tutNextBtn').addEventListener('click', function () { self.tutorialNext(); });
-        document.getElementById('tutCloseBtn').addEventListener('click', function () {
-            document.getElementById('tutorialOverlay').classList.remove('active');
-        });
-    }
+    var self = this;
+    document.querySelectorAll('.nav-item').forEach(function (item) {
+        item.addEventListener('click', function () { self.show(item.dataset.screen); });
+    });
+    document.querySelectorAll('.back-btn').forEach(function (btn) {
+        btn.addEventListener('click', function () { self.show('screenHome'); });
+    });
+    var settingsBtn = document.getElementById('settingsBtn');
+    if (settingsBtn) settingsBtn.addEventListener('click', function () { self.show('screenSettings'); });
+    var shopBtn = document.getElementById('shopBtn');
+    if (shopBtn) shopBtn.addEventListener('click', function () { self.show('screenShop'); });
+    var questBtn = document.getElementById('questBtn');
+    if (questBtn) questBtn.addEventListener('click', function () { self.show('screenQuests'); });
+    var achievementsBtn = document.getElementById('achievementsBtn');
+    if (achievementsBtn) achievementsBtn.addEventListener('click', function () { self.show('screenAchievements'); });
+    var myCardsBtn = document.getElementById('myCardsBtn');
+    if (myCardsBtn) myCardsBtn.addEventListener('click', function () { self.show('screenMyCards'); self.renderCustomCardList(); });
+    var tutorialBtn = document.getElementById('tutorialBtn');
+    if (tutorialBtn) tutorialBtn.addEventListener('click', function () { self.showTutorial(); });
+    var tutNextBtn = document.getElementById('tutNextBtn');
+    if (tutNextBtn) tutNextBtn.addEventListener('click', function () { self.tutorialNext(); });
+    var tutCloseBtn = document.getElementById('tutCloseBtn');
+    if (tutCloseBtn) tutCloseBtn.addEventListener('click', function () {
+        document.getElementById('tutorialOverlay').classList.remove('active');
+    });
+}
 
     bindMusicToggle() {
-        var btn = document.getElementById('musicToggleBtn');
-        btn.addEventListener('click', function () {
-            var playing = audio.toggleMusic();
-            btn.textContent = playing ? '\uD83C\uDFB5 Music: ON' : '\uD83C\uDFB5 Music: OFF';
-        });
-        if (storage.get('musicOn')) btn.textContent = '\uD83C\uDFB5 Music: ON';
-    }
+    var btn = document.getElementById('musicToggleBtn');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+        var playing = audio.toggleMusic();
+        btn.textContent = playing ? '\uD83C\uDFB5 Music: ON' : '\uD83C\uDFB5 Music: OFF';
+    });
+    if (storage.get('musicOn')) btn.textContent = '\uD83C\uDFB5 Music: ON';
+}
 
     // ===== EASTER EGGS =====
 
@@ -355,18 +364,11 @@ class UI {
     // ===== HOME SCREEN =====
 
     renderHome() {
-        var tc = storage.get('totalCorrect');
-        var tw = storage.get('totalWrong');
-        var acc = (tc + tw) > 0 ? Math.round(tc / (tc + tw) * 100) : 0;
-        var totalCards = CARDS.length + customCards.count();
-        var achCount = storage.getAchievementCount();
-        document.getElementById('homeStats').innerHTML =
-            '<div class="stat-pill"><div class="val">' + storage.get('coins') + '</div><div class="label">Coins</div></div>' +
-            '<div class="stat-pill"><div class="val">' + storage.get('bestScore') + '</div><div class="label">Best</div></div>' +
-            '<div class="stat-pill"><div class="val">' + acc + '%</div><div class="label">Accuracy</div></div>' +
-            '<div class="stat-pill"><div class="val">' + storage.get('dailyStreak') + '</div><div class="label">Daily</div></div>' +
-            '<div class="stat-pill"><div class="val">' + achCount + '/' + ACHIEVEMENTS.length + '</div><div class="label">Badges</div></div>';
-    }
+    var homeCoins = document.getElementById('homeCoins');
+    var homeBest = document.getElementById('homeBest');
+    if (homeCoins) homeCoins.textContent = storage.get('coins');
+    if (homeBest) homeBest.textContent = storage.get('bestScore');
+}
 
     // ===== SUBJECTS =====
 
@@ -527,38 +529,49 @@ class UI {
     // ===== SETTINGS =====
 
     renderSettings() {
-        var self = this;
-        document.getElementById('settingsContent').innerHTML =
-            '<div class="setting-row"><div style="font-size:13px">\uD83C\uDF19 Night Shift</div><div class="toggle ' + (storage.get('nightMode') ? 'on' : '') + '" data-setting="nightMode"></div></div>' +
-            '<div class="setting-row"><div style="font-size:13px">\uD83D\uDDE3 Text-to-Speech</div><div class="toggle ' + (storage.get('ttsEnabled') ? 'on' : '') + '" data-setting="ttsEnabled"></div></div>' +
-            '<div class="setting-row"><div style="font-size:13px">\uD83D\uDD0A Master Volume</div><input type="range" min="0" max="1" step="0.1" value="' + storage.get('masterVolume') + '" data-range="masterVolume" style="width:100px;accent-color:var(--accent-cyan)"></div>' +
-            '<div class="setting-row"><div style="font-size:13px">\uD83C\uDFB5 SFX Volume</div><input type="range" min="0" max="1" step="0.1" value="' + storage.get('sfxVolume') + '" data-range="sfxVolume" style="width:100px;accent-color:var(--accent-cyan)"></div>' +
-            '<div style="margin-top:20px"><button class="btn btn-red btn-block" id="resetBtn">\uD83D\uDDD1 Reset All Progress</button></div>';
+    var self = this;
+    document.getElementById('settingsContent').innerHTML =
+        '<div class="setting-row"><div style="font-size:13px">\uD83C\uDFB5 Music</div><div class="toggle ' + (storage.get('musicOn') ? 'on' : '') + '" data-setting="musicOn"></div></div>' +
+        '<div class="setting-row"><div style="font-size:13px">\uD83C\uDF19 Night Shift</div><div class="toggle ' + (storage.get('nightMode') ? 'on' : '') + '" data-setting="nightMode"></div></div>' +
+        '<div class="setting-row"><div style="font-size:13px">\uD83D\uDDE3 Text-to-Speech</div><div class="toggle ' + (storage.get('ttsEnabled') ? 'on' : '') + '" data-setting="ttsEnabled"></div></div>' +
+        '<div class="setting-row"><div style="font-size:13px">\uD83D\uDD0A Master Volume</div><input type="range" min="0" max="1" step="0.1" value="' + storage.get('masterVolume') + '" data-range="masterVolume" style="width:100px;accent-color:var(--accent-cyan)"></div>' +
+        '<div class="setting-row"><div style="font-size:13px">\uD83C\uDFB5 SFX Volume</div><input type="range" min="0" max="1" step="0.1" value="' + storage.get('sfxVolume') + '" data-range="sfxVolume" style="width:100px;accent-color:var(--accent-cyan)"></div>' +
+        '<div class="setting-row"><div style="font-size:13px">\u2753 How to Play</div><button class="btn btn-outline btn-sm" id="settingsTutorialBtn">Tutorial</button></div>' +
+        '<div style="margin-top:20px"><button class="btn btn-red btn-block" id="resetBtn">\uD83D\uDDD1 Reset All Progress</button></div>';
 
-        document.querySelectorAll('[data-setting]').forEach(function (toggle) {
-            toggle.addEventListener('click', function () {
-                var key = toggle.dataset.setting;
-                storage.set(key, !storage.get(key));
-                toggle.classList.toggle('on');
+    document.querySelectorAll('[data-setting]').forEach(function (toggle) {
+        toggle.addEventListener('click', function () {
+            var key = toggle.dataset.setting;
+            var newVal = !storage.get(key);
+            storage.set(key, newVal);
+            toggle.classList.toggle('on');
+            if (key === 'nightMode') {
                 self.applySettings();
-                if (key === 'nightMode' && self.onNightModeChange) self.onNightModeChange();
-            });
-        });
-        document.querySelectorAll('[data-range]').forEach(function (range) {
-            range.addEventListener('input', function () {
-                storage.set(range.dataset.range, parseFloat(range.value));
-                audio.updateMusicVolume();
-            });
-        });
-        document.getElementById('resetBtn').addEventListener('click', function () {
-            if (confirm('Reset ALL progress? This cannot be undone.')) {
-                storage.reset();
-                self.init();
-                alert('Progress reset!');
+                if (self.onNightModeChange) self.onNightModeChange();
+            }
+            if (key === 'musicOn') {
+                if (newVal) { audio.startMusic(); } else { audio.stopMusic(); }
             }
         });
-        this.applySettings();
-    }
+    });
+    document.querySelectorAll('[data-range]').forEach(function (range) {
+        range.addEventListener('input', function () {
+            storage.set(range.dataset.range, parseFloat(range.value));
+            audio.updateMusicVolume();
+        });
+    });
+    var resetBtn = document.getElementById('resetBtn');
+    if (resetBtn) resetBtn.addEventListener('click', function () {
+        if (confirm('Reset ALL progress? This cannot be undone.')) {
+            storage.reset();
+            self.init();
+            alert('Progress reset!');
+        }
+    });
+    var settingsTutBtn = document.getElementById('settingsTutorialBtn');
+    if (settingsTutBtn) settingsTutBtn.addEventListener('click', function () { self.showTutorial(); });
+    this.applySettings();
+}
 
     onNightModeChange = null;
 
