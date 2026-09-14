@@ -20,6 +20,9 @@
 <!-- Three.js game renders here -->
 <div id="gameContainer"></div>
 
+<!-- NEW: Rush vignette overlay (Item 11) -->
+<div id="rushVignette" class="rush-vignette"></div>
+
 <!-- Track name overlay (shown briefly at run start) -->
 <div id="trackNameOverlay">
   <div id="trackNameText"></div>
@@ -33,6 +36,8 @@
     <div class="hud-pill">🔥 <span id="hudStreak">0</span></div>
     <div class="hud-pill">× <span id="hudMulti">1</span></div>
     <div class="hud-pill">❤️ <span id="hudLives">3</span></div>
+    <!-- NEW: Speed timer HUD element (Item 16) -->
+    <div class="hud-pill" id="hudSpeedTimer" style="display:none">⏱ 0.00s</div>
     <div class="hud-pill clickable" id="pauseBtn">⏸</div>
   </div>
   <div id="buzzBox"><div id="buzzText">GET READY</div></div>
@@ -94,6 +99,10 @@
       <h1>⚡ Buzzword Dash</h1>
       <p>USMLE & COMLEX Board Runner</p>
     </div>
+
+    <!-- NEW: Home character preview container (Item 3) -->
+    <div id="homeCharacterContainer"></div>
+
     <div class="stat-row" id="homeStats"></div>
     <div class="save-indicator">💾 Progress auto-saved</div>
 
