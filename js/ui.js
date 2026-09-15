@@ -32,7 +32,7 @@ import { SUBJECTS, CARDS, EXAM_FILTERS } from './cards.js';
 import { storage } from './storage.js';
 import { audio } from './audio.js';
 import { customCards } from './customcards.js';
-import { SHOP_ITEMS, QUESTS, ACHIEVEMENTS, CONTINUE_COST } from './game/engine.js';
+import { SHOP_ITEMS, QUESTS, ACHIEVEMENTS, CONTINUE_COST } from './game/shopdata.js';
 import { CharacterPreview } from './game/preview.js';
 import { FlashcardMode } from './game/flashcardmode.js';
 
