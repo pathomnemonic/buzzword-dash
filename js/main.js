@@ -30,6 +30,14 @@
  * - Multiplayer mode selection UI using MP_MODES
  * - Card reporting (Report Card Issue) wired in post-run
  * - CARDS exported to window for multiplayer seeded card order
+ *
+ * AGENT 8 ADDITIONS:
+ * - Anki import module lazy loading and wiring
+ * - Leaderboard + Friends module lazy loading and wiring
+ * - Leaderboard score submission on run end
+ * - Leaderboard button binding
+ * - Multiplayer seeded card order support
+ * - Periodic friend match invite checking
  */
 
 import { game } from './game/engine.js';
@@ -40,6 +48,11 @@ import { CARDS } from './cards.js';
 import { customCards } from './customcards.js';
 import { HomeCharacter } from './game/homecharacter.js';
 import { FlashcardMode } from './game/flashcardmode.js';
+
+// ===== ADDITION 1: Lazy import variables for new modules =====
+// These are loaded dynamically when needed to avoid blocking initial load
+var ankiImportModule = null;
+var leaderboardModule = null;
 
 // ===== EXPOSE CARDS FOR MULTIPLAYER SEEDED CARD ORDER =====
 // multiplayer.js getSeededCardOrder() needs access to CARDS at runtime
@@ -349,6 +362,18 @@ function startMode(mode) {
     ui.countdown(function () {
         game.go();
     });
+
+    // ===== ADDITION 5: Multiplayer seeded card order support =====
+    // Set seeded card order if in a multiplayer match with a shared seed
+    if (multiplayerClient && multiplayerClient.getSeed && multiplayerClient.getSeed() > 0) {
+        import('./multiplayer.js').then(function(mod) {
+            if (mod.getSeededCardOrder) {
+                var mpSubjects = storage.get('selectedSubjects') || [];
+                var seededOrder = mod.getSeededCardOrder(multiplayerClient.getSeed(), mpSubjects, 100);
+                game.seededCardOrder = seededOrder;
+            }
+        }).catch(function(){});
+    }
 }
 
 // ===== BOTTOM NAV VISIBILITY =====
@@ -579,6 +604,36 @@ function init() {
         showOnboarding();
     }
 
+    // ===== ADDITION 2: Load and wire Anki import + Leaderboard =====
+
+    // Load and wire Anki import
+    import('./ankiimport.js').then(function(mod) {
+        ankiImportModule = mod;
+        var ankiContainer = document.getElementById('ankiImportContainer');
+        if (ankiContainer && mod.ankiImport) {
+            ankiContainer.innerHTML = mod.ankiImport.renderAnkiImportUI();
+            mod.ankiImport.bindAnkiEvents(ankiContainer, customCards, storage);
+        }
+    }).catch(function(e) {
+        console.warn('Anki import module not available:', e.message);
+    });
+
+    // Load and wire Leaderboard + Friends
+    import('./leaderboard.js').then(function(mod) {
+        leaderboardModule = mod;
+        mod.leaderboard.init().then(function() {
+            var lbContent = document.getElementById('leaderboardContent');
+            if (lbContent) {
+                lbContent.innerHTML = mod.renderLeaderboardScreen();
+                mod.bindLeaderboardEvents(lbContent, storage);
+            }
+        }).catch(function(e) {
+            console.warn('Leaderboard init failed:', e.message);
+        });
+    }).catch(function(e) {
+        console.warn('Leaderboard module not available:', e.message);
+    });
+
     // ===== WIRE GAME -> UI CALLBACKS =====
 
     game.onEncounterStart = function (card, gates) {
@@ -621,6 +676,25 @@ function init() {
         // Track cards studied
         if (storage.addCardsStudied && game.encountersDone > 0) {
             storage.addCardsStudied(game.encountersDone);
+        }
+
+        // ===== ADDITION 3: Submit score to leaderboard =====
+        // Submit score to leaderboard if profile is visible
+        if (leaderboardModule && storage.get('profileVisible') && storage.get('profileName')) {
+            var totalAnswered = game.correct + game.wrong;
+            var accuracy = totalAnswered > 0 ? Math.round(game.correct / totalAnswered * 100) : 0;
+            leaderboardModule.leaderboard.submitScore({
+                playerName: storage.get('profileName'),
+                avatar: storage.get('profilePicture') || 'avatar_intern',
+                score: game.score,
+                accuracy: accuracy,
+                bestStreak: game.bestStreak,
+                speed: game.userSpeed,
+                mode: game.mode,
+                badges: storage.get('selectedBadges') || []
+            }).catch(function(e) {
+                console.warn('Leaderboard submit failed:', e.message);
+            });
         }
 
         // Multiplayer: send final score
@@ -821,6 +895,23 @@ function init() {
         });
     }
 
+    // ===== ADDITION 4: Leaderboard button binding =====
+
+    var leaderboardBtn = document.getElementById('leaderboardBtn');
+    if (leaderboardBtn) {
+        leaderboardBtn.addEventListener('click', function () {
+            ui.show('screenLeaderboard');
+            // Refresh leaderboard data when screen is shown
+            if (leaderboardModule) {
+                var lbContent = document.getElementById('leaderboardContent');
+                if (lbContent) {
+                    lbContent.innerHTML = leaderboardModule.renderLeaderboardScreen();
+                    leaderboardModule.bindLeaderboardEvents(lbContent, storage);
+                }
+            }
+        });
+    }
+
     // ===== MULTIPLAYER BUTTON =====
 
     var mpBtn = document.getElementById('multiplayerBtn');
@@ -936,6 +1027,31 @@ function init() {
     // ===== UPDATE CUSTOM CARDS REFERENCE FOR MULTIPLAYER =====
     // Keep the window reference updated when custom cards change
     window.__BUZZWORD_CUSTOM_CARDS = customCards.getAll();
+
+    // ===== ADDITION 6: Periodic invite checking for friends system =====
+    // Check for friend match invites every 5 seconds
+    setInterval(function() {
+        if (leaderboardModule && leaderboardModule.leaderboard && !game.running) {
+            leaderboardModule.leaderboard.checkInvites().then(function(invites) {
+                if (invites && invites.length > 0) {
+                    var invite = invites[0];
+                    if (confirm('You have a match invite from a friend! Room code: ' + invite.room_code + '\n\nJoin now?')) {
+                        // Open multiplayer overlay and auto-join
+                        var mpBtnEl = document.getElementById('multiplayerBtn');
+                        if (mpBtnEl) mpBtnEl.click();
+                        setTimeout(function() {
+                            var joinInput = document.getElementById('mpJoinCode');
+                            var joinBtn = document.getElementById('mpJoinBtn');
+                            if (joinInput && joinBtn) {
+                                joinInput.value = invite.room_code;
+                                joinBtn.click();
+                            }
+                        }, 1500);
+                    }
+                }
+            }).catch(function(){});
+        }
+    }, 5000);
 }
 
 // ===== START =====
