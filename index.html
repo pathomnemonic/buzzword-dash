@@ -141,7 +141,7 @@
 <!-- ====================================================================
      SCREENS — All transparent, floating over the 3D canvas.
      Bottom nav is OUTSIDE all screens so it persists everywhere.
-==================================================================== -->
+     ==================================================================== -->
 
 <!-- ==================== HOME ==================== -->
 <div class="screen active" id="screenHome">
@@ -233,6 +233,11 @@
       <button class="btn btn-outline btn-sm" id="flashcardBtn" style="flex:1">📖 Flashcards</button>
       <button class="btn btn-outline btn-sm" id="cardBrowserBtn" style="flex:1">📚 Browse Cards</button>
       <button class="btn btn-outline btn-sm" id="profileBtn" style="flex:1">👤 Profile</button>
+    </div>
+
+    <!-- ADDITION 1: Leaderboard button row -->
+    <div style="display:flex;gap:6px;margin-top:6px">
+      <button class="btn btn-outline btn-sm" id="leaderboardBtn" style="flex:1">🏆 Leaderboard</button>
     </div>
 
     <!-- NEW: How to Play Section -->
@@ -366,6 +371,14 @@
   </div>
 </div>
 
+<!-- ADDITION 2: ==================== LEADERBOARD ==================== -->
+<div class="screen" id="screenLeaderboard">
+  <div class="screen-scroll">
+    <h2 style="margin-bottom:14px">🏆 Leaderboard</h2>
+    <div id="leaderboardContent"></div>
+  </div>
+</div>
+
 <!-- ==================== NEW: FLASHCARD MODE ==================== -->
 <div class="screen" id="screenFlashcard">
   <div class="screen-scroll">
@@ -377,12 +390,13 @@
 <!-- ====================================================================
      PERSISTENT BOTTOM NAV — Outside all screens, always visible
      except during gameplay (hidden by JS when game.running)
-==================================================================== -->
+     ==================================================================== -->
+<!-- ADDITION 3: Replaced Profile nav item with Leaderboard (Ranks) -->
 <div class="bottom-nav" id="bottomNav">
   <div class="nav-item active" data-screen="screenHome"><span class="nav-icon">🏠</span>Home</div>
   <div class="nav-item" data-screen="screenStats"><span class="nav-icon">📊</span>Stats</div>
   <div class="nav-item" data-screen="screenShop"><span class="nav-icon">🧥</span>Locker</div>
-  <div class="nav-item" data-screen="screenProfile"><span class="nav-icon">👤</span>Profile</div>
+  <div class="nav-item" data-screen="screenLeaderboard"><span class="nav-icon">🏆</span>Ranks</div>
   <div class="nav-item" data-screen="screenSettings"><span class="nav-icon">⚙</span>Settings</div>
 </div>
 
