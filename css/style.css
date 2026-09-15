@@ -979,3 +979,1007 @@ html, body {
     -webkit-backdrop-filter: blur(10px);
   }
 }
+
+/* ==================================================================
+   NEW SCREEN STYLES — Flashcard, Card Browser, Profile, How to Play,
+   Multiplayer Mode Selection
+   ================================================================== */
+
+/* ==================== FLASHCARD MODE ==================== */
+.fc-buzzwords {
+  font-size: 16px;
+  font-weight: 800;
+  color: #fff;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  line-height: 1.4;
+  margin-bottom: 10px;
+}
+
+.fc-meta {
+  margin-top: 6px;
+  margin-bottom: 8px;
+}
+
+.fc-answer {
+  font-size: 20px;
+  font-weight: 900;
+  color: var(--accent-green);
+  margin: 14px 0 8px;
+  text-shadow: 0 0 10px rgba(0, 255, 136, 0.3);
+}
+
+.fc-teaching {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin: 8px 0;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--accent-cyan);
+}
+
+.fc-distractors {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin: 6px 0;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: var(--radius-sm);
+}
+
+.fc-why-wrong {
+  margin-top: 8px;
+}
+
+.fc-ww-item {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  padding: 5px 0;
+  border-bottom: 1px solid rgba(187, 102, 255, 0.06);
+}
+
+.fc-ww-item:last-child {
+  border-bottom: none;
+}
+
+#flashcardContent .btn-green {
+  background: var(--grad-green);
+  color: #000;
+}
+
+#flashcardContent .btn-red {
+  background: var(--grad-red);
+  color: #fff;
+}
+
+/* Flashcard progress bar */
+.fc-progress-bar {
+  width: 100%;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+  margin: 8px 0;
+  overflow: hidden;
+}
+
+.fc-progress-fill {
+  height: 100%;
+  background: var(--grad-primary);
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+
+/* ==================== CARD BROWSER ==================== */
+#cardBrowserContent {
+  margin-top: 8px;
+}
+
+.card-browser-search {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: rgba(30, 15, 70, 0.6);
+  color: #fff;
+  border: 1px solid rgba(187, 102, 255, 0.15);
+  font-size: 14px;
+  margin-bottom: 10px;
+  font-family: inherit;
+}
+
+.card-browser-search:focus {
+  outline: none;
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 0 3px rgba(0, 238, 255, 0.15);
+}
+
+.card-browser-search::placeholder {
+  color: var(--text-muted);
+}
+
+.card-browser-filters {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.card-browser-filter-chip {
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  font-weight: 700;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.card-browser-filter-chip.active {
+  background: rgba(68, 170, 255, 0.15);
+  color: var(--accent-cyan);
+  border-color: var(--accent-cyan);
+}
+
+.card-browser-filter-chip:hover {
+  border-color: rgba(187, 102, 255, 0.3);
+}
+
+.card-browser-stats {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(187, 102, 255, 0.08);
+}
+
+.card-browser-item {
+  background: var(--bg-card);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  margin: 6px 0;
+  border: var(--border-card);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(6px);
+  transition: all 0.2s;
+  cursor: pointer;
+}
+
+.card-browser-item:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-card-hover);
+}
+
+.card-browser-item.disabled-card {
+  opacity: 0.45;
+  border-left: 3px solid var(--accent-red);
+}
+
+.card-browser-item.missed-card {
+  border-left: 3px solid var(--accent-red);
+}
+
+.card-browser-item .cb-buzzwords {
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  margin-bottom: 4px;
+  line-height: 1.3;
+}
+
+.card-browser-item .cb-answer {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--accent-green);
+  margin-bottom: 4px;
+}
+
+.card-browser-item .cb-meta {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.card-browser-item .cb-difficulty {
+  display: inline-flex;
+  gap: 1px;
+  font-size: 8px;
+}
+
+.card-browser-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(187, 102, 255, 0.1);
+  transition: all 0.2s;
+}
+
+.card-browser-toggle:hover {
+  background: rgba(255, 51, 85, 0.1);
+  border-color: rgba(255, 51, 85, 0.3);
+  color: var(--accent-red);
+}
+
+.card-browser-toggle.enabled {
+  background: rgba(0, 255, 136, 0.08);
+  border-color: rgba(0, 255, 136, 0.2);
+  color: var(--accent-green);
+}
+
+/* Card browser list virtualization hint */
+.card-browser-list {
+  max-height: 60vh;
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.card-browser-list::-webkit-scrollbar {
+  display: none;
+}
+
+.card-browser-load-more {
+  text-align: center;
+  padding: 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+/* ==================== PROFILE SCREEN ==================== */
+#profileContent {
+  text-align: center;
+}
+
+.profile-header {
+  text-align: center;
+  padding: 16px 0;
+}
+
+.profile-avatar {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background: var(--grad-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 36px;
+  margin: 0 auto 10px;
+  border: 3px solid var(--accent-cyan);
+  box-shadow: var(--shadow-glow-cyan);
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.2s;
+}
+
+.profile-avatar:hover {
+  transform: scale(1.05);
+  box-shadow: 0 0 30px rgba(0, 238, 255, 0.4);
+}
+
+.profile-name {
+  font-size: 22px;
+  font-weight: 900;
+  color: #fff;
+  margin-bottom: 2px;
+}
+
+.profile-name-input {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid rgba(187, 102, 255, 0.3);
+  color: #fff;
+  font-size: 20px;
+  font-weight: 800;
+  text-align: center;
+  padding: 4px 8px;
+  outline: none;
+  width: 200px;
+  max-width: 80%;
+  font-family: inherit;
+  transition: border-color 0.2s;
+}
+
+.profile-name-input:focus {
+  border-color: var(--accent-cyan);
+}
+
+.profile-name-input::placeholder {
+  color: var(--text-muted);
+}
+
+.profile-streak-badge {
+  font-size: 12px;
+  color: var(--accent-gold);
+  font-weight: 700;
+  margin-top: 2px;
+}
+
+.profile-stats-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.profile-stat {
+  background: var(--grad-card);
+  border-radius: var(--radius-md);
+  padding: 10px 6px;
+  text-align: center;
+  border: var(--border-card);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(6px);
+}
+
+.profile-stat .val {
+  font-size: 18px;
+  font-weight: 900;
+  color: var(--accent-gold);
+}
+
+.profile-stat .label {
+  font-size: 8px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  margin-top: 2px;
+}
+
+.profile-badges {
+  margin: 14px 0;
+}
+
+.profile-badges h4 {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+  text-align: left;
+}
+
+.profile-badge-grid {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.profile-badge {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  border: var(--border-card);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  cursor: pointer;
+  transition: all 0.2s;
+  box-shadow: var(--shadow-card);
+}
+
+.profile-badge.selected {
+  border-color: var(--accent-gold);
+  box-shadow: var(--shadow-glow-gold);
+  background: rgba(255, 204, 0, 0.08);
+}
+
+.profile-badge:hover {
+  transform: scale(1.1);
+}
+
+.profile-badge.empty {
+  opacity: 0.3;
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+.profile-section {
+  background: var(--grad-card);
+  border-radius: var(--radius-lg);
+  padding: 14px;
+  margin: 10px 0;
+  border: var(--border-card);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(6px);
+  text-align: left;
+}
+
+.profile-section h4 {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+.profile-visibility-toggle {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.profile-picture-selector {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.profile-pic-option {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--bg-card);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: all 0.2s;
+}
+
+.profile-pic-option.active {
+  border-color: var(--accent-cyan);
+  box-shadow: var(--shadow-glow-cyan);
+}
+
+.profile-pic-option:hover {
+  transform: scale(1.1);
+}
+
+/* ==================== HOW TO PLAY SECTION ==================== */
+#howToPlaySection {
+  margin-top: 10px;
+}
+
+#howToPlaySection h4 {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+#howToPlaySection details {
+  margin-bottom: 4px;
+  background: var(--bg-card);
+  border-radius: var(--radius-sm);
+  padding: 0;
+  border: var(--border-card);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(6px);
+  overflow: hidden;
+  transition: all 0.2s;
+}
+
+#howToPlaySection details[open] {
+  border-color: rgba(0, 238, 255, 0.2);
+}
+
+#howToPlaySection details summary {
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 8px 12px;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: color 0.2s;
+}
+
+#howToPlaySection details summary::-webkit-details-marker {
+  display: none;
+}
+
+#howToPlaySection details summary::after {
+  content: '▸';
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-muted);
+  transition: transform 0.2s;
+}
+
+#howToPlaySection details[open] summary::after {
+  transform: rotate(90deg);
+}
+
+#howToPlaySection details summary:hover {
+  color: var(--accent-cyan);
+}
+
+#howToPlaySection details p {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin: 0;
+  padding: 0 12px 10px;
+  line-height: 1.55;
+}
+
+/* ==================== EXAM FILTER ==================== */
+#examFilterContainer {
+  margin: 8px 0;
+}
+
+.exam-filter-section {
+  background: var(--grad-card);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  border: var(--border-card);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(6px);
+}
+
+.exam-filter-section h4 {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.exam-filter-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.exam-chip {
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  font-weight: 700;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.exam-chip.selected {
+  background: rgba(0, 255, 136, 0.12);
+  color: var(--accent-green);
+  border-color: var(--accent-green);
+  box-shadow: var(--shadow-glow-green);
+}
+
+.exam-chip:hover {
+  border-color: rgba(187, 102, 255, 0.3);
+}
+
+/* ==================== MULTIPLAYER MODE SELECTION ==================== */
+.mp-mode-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.mp-mode-card {
+  background: var(--grad-card);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  border: 2px solid rgba(187, 102, 255, 0.15);
+  cursor: pointer;
+  transition: all 0.2s;
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(6px);
+  text-align: left;
+}
+
+.mp-mode-card:hover {
+  border-color: var(--accent-cyan);
+  box-shadow: var(--shadow-glow-cyan);
+  transform: translateY(-2px);
+}
+
+.mp-mode-card:active {
+  transform: scale(0.98);
+}
+
+.mp-mode-card.selected {
+  border-color: var(--accent-green);
+  box-shadow: var(--shadow-glow-green);
+  background: rgba(0, 255, 136, 0.05);
+}
+
+.mp-mode-name {
+  font-size: 15px;
+  font-weight: 800;
+  color: #fff;
+  margin-bottom: 2px;
+}
+
+.mp-mode-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.mp-mode-config {
+  margin-top: 10px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(187, 102, 255, 0.1);
+}
+
+.mp-mode-config label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-weight: 700;
+  display: block;
+  margin-bottom: 4px;
+}
+
+.mp-mode-config input[type="number"],
+.mp-mode-config select {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: rgba(30, 15, 70, 0.6);
+  color: #fff;
+  border: 1px solid rgba(187, 102, 255, 0.15);
+  font-size: 14px;
+  font-family: inherit;
+}
+
+.mp-mode-config input[type="number"]:focus,
+.mp-mode-config select:focus {
+  outline: none;
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 0 3px rgba(0, 238, 255, 0.15);
+}
+
+.mp-rush-reminder {
+  text-align: center;
+  font-size: 11px;
+  color: var(--accent-orange);
+  font-weight: 700;
+  margin-top: 8px;
+  padding: 6px;
+  background: rgba(255, 136, 0, 0.08);
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 136, 0, 0.2);
+}
+
+/* Multiplayer mode progress indicators */
+.mp-progress-bar {
+  width: 100%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  margin: 6px 0;
+  overflow: hidden;
+}
+
+.mp-progress-fill {
+  height: 100%;
+  background: var(--grad-green);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.mp-timer {
+  font-size: 24px;
+  font-weight: 900;
+  color: var(--accent-cyan);
+  text-align: center;
+  font-family: monospace;
+  text-shadow: 0 0 12px rgba(0, 238, 255, 0.4);
+}
+
+.mp-timer.warning {
+  color: var(--accent-red);
+  text-shadow: 0 0 12px rgba(255, 51, 85, 0.4);
+  animation: timerPulse 0.5s ease-in-out infinite;
+}
+
+@keyframes timerPulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+}
+
+/* ==================== CARD REPORT FORM ==================== */
+.card-report-form {
+  background: var(--bg-card);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  margin-top: 8px;
+  border: var(--border-card);
+}
+
+.card-report-form label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-weight: 700;
+  display: block;
+  margin-bottom: 4px;
+}
+
+.card-report-form select,
+.card-report-form textarea {
+  width: 100%;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  background: rgba(30, 15, 70, 0.6);
+  color: #fff;
+  border: 1px solid rgba(187, 102, 255, 0.15);
+  font-size: 12px;
+  font-family: inherit;
+  margin-bottom: 8px;
+}
+
+.card-report-form select:focus,
+.card-report-form textarea:focus {
+  outline: none;
+  border-color: var(--accent-cyan);
+}
+
+.card-report-form textarea {
+  resize: vertical;
+  min-height: 60px;
+}
+
+/* ==================== POST-RUN IMPROVEMENTS ==================== */
+
+/* Collapsible correct answers section */
+.correct-answers-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  padding: 8px 0;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: color 0.2s;
+}
+
+.correct-answers-toggle:hover {
+  color: var(--accent-cyan);
+}
+
+.correct-answers-toggle .toggle-arrow {
+  font-size: 10px;
+  color: var(--text-muted);
+  transition: transform 0.2s;
+}
+
+.correct-answers-toggle.open .toggle-arrow {
+  transform: rotate(90deg);
+}
+
+.correct-answers-content {
+  display: none;
+}
+
+.correct-answers-content.open {
+  display: block;
+}
+
+/* ==================== ANKI IMPORT SECTION ==================== */
+.anki-import-section {
+  margin-top: 14px;
+  padding: 14px;
+  background: var(--grad-card);
+  border-radius: var(--radius-lg);
+  border: var(--border-card);
+  box-shadow: var(--shadow-card);
+}
+
+.anki-import-section h4 {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+
+.anki-api-key-input {
+  width: 100%;
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  background: rgba(30, 15, 70, 0.6);
+  color: #fff;
+  border: 1px solid rgba(187, 102, 255, 0.15);
+  font-size: 12px;
+  font-family: monospace;
+  margin-bottom: 8px;
+}
+
+.anki-api-key-input:focus {
+  outline: none;
+  border-color: var(--accent-cyan);
+}
+
+.anki-import-progress {
+  width: 100%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  margin: 8px 0;
+  overflow: hidden;
+}
+
+.anki-import-progress-fill {
+  height: 100%;
+  background: var(--grad-primary);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.anki-import-status {
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-align: center;
+  margin: 6px 0;
+}
+
+/* ==================== SETTINGS ADDITIONS ==================== */
+.setting-row .setting-label {
+  font-size: 13px;
+  flex: 1;
+}
+
+.setting-row .setting-sublabel {
+  font-size: 10px;
+  color: var(--text-muted);
+  display: block;
+  margin-top: 2px;
+}
+
+/* Card freshness weight slider */
+.freshness-slider {
+  width: 100px;
+  accent-color: var(--accent-cyan);
+}
+
+.freshness-value {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent-gold);
+  min-width: 24px;
+  text-align: center;
+}
+
+/* ==================== SUBJECT NOTE (deselect all info) ==================== */
+#subjectNote {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-align: center;
+  margin-top: 4px;
+  padding: 4px 8px;
+  background: rgba(0, 238, 255, 0.05);
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(0, 238, 255, 0.1);
+}
+
+/* ==================== CALENDAR QUEST COMPLETION STAR ==================== */
+.calendar-day.quests-complete::after {
+  content: '⭐';
+  font-size: 6px;
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  line-height: 1;
+}
+
+.calendar-day {
+  position: relative;
+}
+
+/* ==================== CLOTHING SHOP CATEGORY ==================== */
+.shop-category-clothing .shop-item {
+  border-left: 2px solid var(--accent-purple);
+}
+
+/* ==================== WEAKEST CONCEPTS CLICKABLE ==================== */
+.weak-concept-item {
+  cursor: pointer;
+  padding: 5px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  transition: all 0.15s;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.weak-concept-item:hover {
+  background: rgba(68, 170, 255, 0.06);
+  padding-left: 6px;
+  border-radius: 4px;
+}
+
+.weak-concept-item .review-arrow {
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.weak-concept-item:hover .review-arrow {
+  opacity: 1;
+}
+
+/* ==================== RESPONSIVE ADDITIONS ==================== */
+@media (min-width: 768px) {
+  .profile-stats-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+
+  .profile-badge-grid {
+    gap: 10px;
+  }
+
+  .card-browser-item {
+    padding: 14px;
+  }
+
+  .mp-mode-grid {
+    flex-direction: row;
+  }
+
+  .mp-mode-card {
+    flex: 1;
+  }
+
+  .fc-answer {
+    font-size: 22px;
+  }
+}
+
+/* ==================== FALLBACK SUPPORT FOR NEW ELEMENTS ==================== */
+.card-browser-item,
+.profile-section,
+.profile-stat,
+.mp-mode-card,
+.exam-filter-section,
+.anki-import-section,
+.card-report-form,
+#howToPlaySection details {
+  background: rgba(40, 20, 80, 0.85);
+}
+
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  .card-browser-item,
+  .profile-section,
+  .profile-stat,
+  .mp-mode-card,
+  .exam-filter-section,
+  .anki-import-section,
+  .card-report-form,
+  #howToPlaySection details {
+    background: var(--grad-card);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+  }
+}
+
+/* Fix form inputs in new sections */
+.card-browser-search,
+.mp-mode-config input,
+.mp-mode-config select,
+.card-report-form select,
+.card-report-form textarea,
+.anki-api-key-input,
+.profile-name-input {
+  background: rgba(30, 15, 70, 0.85);
+  color: #ffffff;
+}
