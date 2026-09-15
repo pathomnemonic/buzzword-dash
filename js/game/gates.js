@@ -8,6 +8,7 @@
  * - Exam filter support via storage.get('selectedExams')
  * - Disabled cards support via storage.isCardDisabled()
  * - FIX: Removed illegal top-level await that broke module loading chain
+ * - NEW: Seeded card order parameter for multiplayer synchronized card ordering
  */
 
 import * as THREE from 'three';
@@ -81,7 +82,7 @@ function getCardPool(subjects) {
     return filtered;
 }
 
-export function pickCard(recentIds, mode, dailyIndex) {
+export function pickCard(recentIds, mode, dailyIndex, seededOrder) {
     var subjects = storage.get('selectedSubjects');
 
     // NEW: If subjects is empty or null, treat as all subjects selected
@@ -90,6 +91,25 @@ export function pickCard(recentIds, mode, dailyIndex) {
     }
 
     var pool = getCardPool(subjects);
+
+    // Multiplayer: use seeded card order if provided
+    if (seededOrder && Array.isArray(seededOrder) && seededOrder.length > 0) {
+        var allCards = CARDS.concat(customCards.getAll());
+        // Try each ID in order until we find a valid, non-disabled card
+        while (seededOrder.length > 0) {
+            var nextId = seededOrder.shift();
+            for (var si = 0; si < allCards.length; si++) {
+                if (allCards[si].id === nextId) {
+                    // Check if card is disabled
+                    try {
+                        if (storage.isCardDisabled && storage.isCardDisabled(nextId)) continue;
+                    } catch (e) {}
+                    return allCards[si];
+                }
+            }
+        }
+        // Seeded order exhausted, fall through to normal selection
+    }
 
     if (mode === 'daily') {
         var seed = getDailySeed();
