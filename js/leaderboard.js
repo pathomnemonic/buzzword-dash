@@ -82,8 +82,8 @@
  */
 
 // These are safe to expose publicly — Row Level Security handles authorization
-var SUPABASE_URL = 'YOUR_SUPABASE_URL';
-var SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
+var SUPABASE_URL = 'https://replaqmcwynrxclunkck.supabase.co';
+var SUPABASE_ANON_KEY = 'sb_publishable_3k9K-AWsR3mARofiKqx0Ig_4TwvvbU-';
 
 var PLAYER_ID_KEY = 'buzzword_dash_player_id';
 
