@@ -2,16 +2,19 @@
  * player.js — Avatar-based player character builder
  *
  * REDESIGNED with:
- * - CapsuleGeometry / rounded shapes for body (not flat boxes)
- * - Chibi/cartoon proportions (head:body ≈ 1:2.5 instead of 1:4)
- * - Bigger, more expressive eyes (larger white spheres + colored pupils)
+ * - CapsuleGeometry / rounded shapes for body
+ * - Chibi/cartoon proportions (head:body ≈ 1:2.5)
+ * - Bigger, more expressive eyes
  * - Rounder limbs (CylinderGeometry with hemispherical caps)
  * - Visible mouth/smile (TorusGeometry arc)
- * - More vibrant default colors (brighter blue scrubs, redder shoes)
- * - More exaggerated running animation (wider leg swing, body bounce)
- * - All 6 avatar variants use the new rounder proportions
+ * - More vibrant default colors
+ * - More exaggerated running animation
+ * - All 7 avatar variants + 3 vehicle avatars
+ * - Clothing system support
+ * - Faceplant animation support
+ * - Enhanced celebration animation
  *
- * Equipment (hat, gear) applies on top of the avatar base.
+ * Equipment (hat, gear, clothing) applies on top of the avatar base.
  */
 
 import * as THREE from 'three';
@@ -32,14 +35,12 @@ function buildRoundedLimb(radius, length, color) {
     var g = new THREE.Group();
     var mat = new THREE.MeshStandardMaterial({ color: color });
 
-    // Main cylinder
     var cyl = new THREE.Mesh(
         new THREE.CylinderGeometry(radius, radius, length, 8),
         mat
     );
     g.add(cyl);
 
-    // Top cap
     var topCap = new THREE.Mesh(
         new THREE.SphereGeometry(radius, 8, 6),
         mat
@@ -47,7 +48,6 @@ function buildRoundedLimb(radius, length, color) {
     topCap.position.y = length / 2;
     g.add(topCap);
 
-    // Bottom cap
     var botCap = new THREE.Mesh(
         new THREE.SphereGeometry(radius, 8, 6),
         mat
@@ -63,7 +63,6 @@ function buildCapsuleBody(radiusTop, radiusBottom, length, color) {
     var g = new THREE.Group();
     var mat = new THREE.MeshStandardMaterial({ color: color });
 
-    // Try CapsuleGeometry if available (Three.js r142+), fallback to cylinder + spheres
     try {
         var capsule = new THREE.Mesh(
             new THREE.CapsuleGeometry(radiusTop, length, 8, 12),
@@ -71,7 +70,6 @@ function buildCapsuleBody(radiusTop, radiusBottom, length, color) {
         );
         g.add(capsule);
     } catch (e) {
-        // Fallback: cylinder with sphere caps
         var cyl = new THREE.Mesh(
             new THREE.CylinderGeometry(radiusTop, radiusBottom, length, 10),
             mat
@@ -88,12 +86,518 @@ function buildCapsuleBody(radiusTop, radiusBottom, length, color) {
     return g;
 }
 
-export function buildPlayer() {
+// ===== VEHICLE BUILDERS =====
+
+function buildAmbulanceVehicle(avatar) {
     var pg = new THREE.Group();
+    var s = avatar.scale || 1.3;
+
+    // Main body - white box
+    var bodyMat = new THREE.MeshStandardMaterial({ color: 0xf0f0f0 });
+    var body = new THREE.Mesh(
+        new THREE.BoxGeometry(1.4 * s, 0.7 * s, 0.9 * s),
+        bodyMat
+    );
+    body.position.set(0, 0.6 * s, 0);
+    body.castShadow = true;
+    body.name = 'vehicleBody';
+    pg.add(body);
+
+    // Cab section - slightly smaller
+    var cabMat = new THREE.MeshStandardMaterial({ color: 0xdddddd });
+    var cab = new THREE.Mesh(
+        new THREE.BoxGeometry(0.5 * s, 0.5 * s, 0.85 * s),
+        cabMat
+    );
+    cab.position.set(-0.8 * s, 0.5 * s, 0);
+    pg.add(cab);
+
+    // Windshield
+    var windshieldMat = new THREE.MeshBasicMaterial({ color: 0x88ccff, transparent: true, opacity: 0.6 });
+    var windshield = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.02, 0.35 * s, 0.7 * s),
+        windshieldMat
+    );
+    windshield.position.set(-1.05 * s, 0.55 * s, 0);
+    windshield.rotation.y = Math.PI / 2;
+    pg.add(windshield);
+
+    // Red stripe
+    var stripeMat = new THREE.MeshBasicMaterial({ color: 0xff2222 });
+    var stripe = new THREE.Mesh(
+        new THREE.BoxGeometry(1.42 * s, 0.1 * s, 0.92 * s),
+        stripeMat
+    );
+    stripe.position.set(0, 0.65 * s, 0);
+    pg.add(stripe);
+
+    // Red cross on side
+    var crossH = new THREE.Mesh(
+        new THREE.BoxGeometry(0.04, 0.2 * s, 0.06),
+        new THREE.MeshBasicMaterial({ color: 0xff0000 })
+    );
+    crossH.position.set(0.2 * s, 0.8 * s, 0.46 * s);
+    pg.add(crossH);
+    var crossV = new THREE.Mesh(
+        new THREE.BoxGeometry(0.04, 0.06, 0.2 * s),
+        new THREE.MeshBasicMaterial({ color: 0xff0000 })
+    );
+    crossV.position.set(0.2 * s, 0.8 * s, 0.46 * s);
+    pg.add(crossV);
+
+    // Wheels (4)
+    var wheelMat = new THREE.MeshStandardMaterial({ color: 0x222222 });
+    var wheelPositions = [
+        [-0.45 * s, 0.15 * s, 0.48 * s],
+        [-0.45 * s, 0.15 * s, -0.48 * s],
+        [0.45 * s, 0.15 * s, 0.48 * s],
+        [0.45 * s, 0.15 * s, -0.48 * s]
+    ];
+    var wheels = [];
+    for (var wi = 0; wi < wheelPositions.length; wi++) {
+        var wheel = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.15 * s, 0.15 * s, 0.08 * s, 12),
+            wheelMat
+        );
+        wheel.position.set(wheelPositions[wi][0], wheelPositions[wi][1], wheelPositions[wi][2]);
+        wheel.rotation.x = Math.PI / 2;
+        wheel.name = 'wheel_' + wi;
+        pg.add(wheel);
+        wheels.push(wheel);
+    }
+
+    // Flashing lights on roof
+    var light1 = new THREE.Mesh(
+        new THREE.BoxGeometry(0.15 * s, 0.1 * s, 0.12 * s),
+        new THREE.MeshBasicMaterial({ color: 0xff4444 })
+    );
+    light1.position.set(-0.15 * s, 0.98 * s, 0);
+    light1.name = 'light_0';
+    pg.add(light1);
+
+    var light2 = new THREE.Mesh(
+        new THREE.BoxGeometry(0.15 * s, 0.1 * s, 0.12 * s),
+        new THREE.MeshBasicMaterial({ color: 0x4444ff })
+    );
+    light2.position.set(0.15 * s, 0.98 * s, 0);
+    light2.name = 'light_1';
+    pg.add(light2);
+
+    // Cute eyes on windshield area (chibi style)
+    var eyeWhiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    for (var ex = -1; ex <= 1; ex += 2) {
+        var eyeW = new THREE.Mesh(
+            new THREE.SphereGeometry(0.08 * s, 8, 8),
+            eyeWhiteMat
+        );
+        eyeW.position.set(-1.0 * s, 0.6 * s, ex * 0.2 * s);
+        pg.add(eyeW);
+
+        var pupil = new THREE.Mesh(
+            new THREE.SphereGeometry(0.04 * s, 6, 6),
+            new THREE.MeshBasicMaterial({ color: 0x000000 })
+        );
+        pupil.position.set(-1.06 * s, 0.6 * s, ex * 0.2 * s);
+        pg.add(pupil);
+    }
+
+    pg.userData.wheels = wheels;
+    pg.userData.isVehicle = true;
+    pg.userData.vehicleType = 'ambulance';
+
+    return pg;
+}
+
+function buildRaceCarVehicle(avatar) {
+    var pg = new THREE.Group();
+    var s = avatar.scale || 1.3;
+
+    // Sleek body
+    var bodyMat = new THREE.MeshStandardMaterial({ color: 0xdd2222 });
+    var body = new THREE.Mesh(
+        new THREE.BoxGeometry(1.6 * s, 0.4 * s, 0.8 * s),
+        bodyMat
+    );
+    body.position.set(0, 0.4 * s, 0);
+    body.castShadow = true;
+    body.name = 'vehicleBody';
+    pg.add(body);
+
+    // Cockpit dome
+    var cockpitMat = new THREE.MeshBasicMaterial({ color: 0x88ccff, transparent: true, opacity: 0.5 });
+    var cockpit = new THREE.Mesh(
+        new THREE.SphereGeometry(0.25 * s, 8, 6, 0, Math.PI * 2, 0, Math.PI / 2),
+        cockpitMat
+    );
+    cockpit.position.set(-0.1 * s, 0.6 * s, 0);
+    pg.add(cockpit);
+
+    // Spoiler
+    var spoilerMat = new THREE.MeshStandardMaterial({ color: 0xcc0000 });
+    var spoilerWing = new THREE.Mesh(
+        new THREE.BoxGeometry(0.05 * s, 0.02 * s, 0.7 * s),
+        spoilerMat
+    );
+    spoilerWing.position.set(0.7 * s, 0.7 * s, 0);
+    pg.add(spoilerWing);
+    // Spoiler supports
+    for (var ss = -1; ss <= 1; ss += 2) {
+        var support = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.02 * s, 0.02 * s, 0.25 * s, 6),
+            spoilerMat
+        );
+        support.position.set(0.7 * s, 0.55 * s, ss * 0.25 * s);
+        pg.add(support);
+    }
+
+    // Medical cross decal
+    var crossH = new THREE.Mesh(
+        new THREE.BoxGeometry(0.2 * s, 0.04, 0.06),
+        new THREE.MeshBasicMaterial({ color: 0xffffff })
+    );
+    crossH.position.set(0, 0.62 * s, 0.41 * s);
+    pg.add(crossH);
+    var crossV = new THREE.Mesh(
+        new THREE.BoxGeometry(0.06, 0.04, 0.2 * s),
+        new THREE.MeshBasicMaterial({ color: 0xffffff })
+    );
+    crossV.position.set(0, 0.62 * s, 0.41 * s);
+    pg.add(crossV);
+
+    // Wheels
+    var wheelMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+    var wheelPositions = [
+        [-0.55 * s, 0.12 * s, 0.42 * s],
+        [-0.55 * s, 0.12 * s, -0.42 * s],
+        [0.55 * s, 0.12 * s, 0.42 * s],
+        [0.55 * s, 0.12 * s, -0.42 * s]
+    ];
+    var wheels = [];
+    for (var wi = 0; wi < wheelPositions.length; wi++) {
+        var wheel = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.12 * s, 0.12 * s, 0.06 * s, 12),
+            wheelMat
+        );
+        wheel.position.set(wheelPositions[wi][0], wheelPositions[wi][1], wheelPositions[wi][2]);
+        wheel.rotation.x = Math.PI / 2;
+        wheel.name = 'wheel_' + wi;
+        pg.add(wheel);
+        wheels.push(wheel);
+    }
+
+    // Cute eyes on front
+    var eyeWhiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    for (var ex = -1; ex <= 1; ex += 2) {
+        var eyeW = new THREE.Mesh(
+            new THREE.SphereGeometry(0.07 * s, 8, 8),
+            eyeWhiteMat
+        );
+        eyeW.position.set(-0.82 * s, 0.45 * s, ex * 0.2 * s);
+        pg.add(eyeW);
+        var pupil = new THREE.Mesh(
+            new THREE.SphereGeometry(0.035 * s, 6, 6),
+            new THREE.MeshBasicMaterial({ color: 0x000000 })
+        );
+        pupil.position.set(-0.88 * s, 0.45 * s, ex * 0.2 * s);
+        pg.add(pupil);
+    }
+
+    pg.userData.wheels = wheels;
+    pg.userData.isVehicle = true;
+    pg.userData.vehicleType = 'racecar';
+
+    return pg;
+}
+
+function buildHearseVehicle(avatar) {
+    var pg = new THREE.Group();
+    var s = avatar.scale || 1.3;
+
+    // Dark gothic body
+    var bodyMat = new THREE.MeshStandardMaterial({ color: 0x1a1a2e });
+    var body = new THREE.Mesh(
+        new THREE.BoxGeometry(1.5 * s, 0.6 * s, 0.85 * s),
+        bodyMat
+    );
+    body.position.set(0, 0.55 * s, 0);
+    body.castShadow = true;
+    body.name = 'vehicleBody';
+    pg.add(body);
+
+    // Cab
+    var cabMat = new THREE.MeshStandardMaterial({ color: 0x111122 });
+    var cab = new THREE.Mesh(
+        new THREE.BoxGeometry(0.45 * s, 0.45 * s, 0.8 * s),
+        cabMat
+    );
+    cab.position.set(-0.8 * s, 0.5 * s, 0);
+    pg.add(cab);
+
+    // Purple glow aura underneath
+    var glowMat = new THREE.MeshBasicMaterial({ color: 0x6622aa, transparent: true, opacity: 0.2 });
+    var glow = new THREE.Mesh(
+        new THREE.BoxGeometry(1.6 * s, 0.1 * s, 0.95 * s),
+        glowMat
+    );
+    glow.position.set(0, 0.2 * s, 0);
+    pg.add(glow);
+
+    // Coffin window panels (dark glass)
+    var glassMat = new THREE.MeshBasicMaterial({ color: 0x332244, transparent: true, opacity: 0.6 });
+    for (var sx = -1; sx <= 1; sx += 2) {
+        var window_ = new THREE.Mesh(
+            new THREE.PlaneGeometry(0.6 * s, 0.25 * s),
+            glassMat
+        );
+        window_.position.set(0.1 * s, 0.7 * s, sx * 0.43 * s);
+        window_.rotation.y = sx * Math.PI / 2;
+        pg.add(window_);
+    }
+
+    // Silver trim
+    var trimMat = new THREE.MeshStandardMaterial({ color: 0x888899, metalness: 0.6 });
+    var trim = new THREE.Mesh(
+        new THREE.BoxGeometry(1.52 * s, 0.03 * s, 0.87 * s),
+        trimMat
+    );
+    trim.position.set(0, 0.86 * s, 0);
+    pg.add(trim);
+
+    // Wheels
+    var wheelMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+    var wheelPositions = [
+        [-0.5 * s, 0.15 * s, 0.45 * s],
+        [-0.5 * s, 0.15 * s, -0.45 * s],
+        [0.5 * s, 0.15 * s, 0.45 * s],
+        [0.5 * s, 0.15 * s, -0.45 * s]
+    ];
+    var wheels = [];
+    for (var wi = 0; wi < wheelPositions.length; wi++) {
+        var wheel = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.15 * s, 0.15 * s, 0.07 * s, 12),
+            wheelMat
+        );
+        wheel.position.set(wheelPositions[wi][0], wheelPositions[wi][1], wheelPositions[wi][2]);
+        wheel.rotation.x = Math.PI / 2;
+        wheel.name = 'wheel_' + wi;
+        pg.add(wheel);
+        wheels.push(wheel);
+    }
+
+    // Spooky eyes (purple glow)
+    var eyeMat = new THREE.MeshBasicMaterial({ color: 0x8844cc });
+    for (var ex = -1; ex <= 1; ex += 2) {
+        var eye = new THREE.Mesh(
+            new THREE.SphereGeometry(0.06 * s, 8, 8),
+            eyeMat
+        );
+        eye.position.set(-1.0 * s, 0.55 * s, ex * 0.2 * s);
+        pg.add(eye);
+    }
+
+    pg.userData.wheels = wheels;
+    pg.userData.isVehicle = true;
+    pg.userData.vehicleType = 'hearse';
+
+    return pg;
+}
+
+function buildVehicle(avatar) {
+    switch (avatar.vehicleType) {
+        case 'ambulance': return buildAmbulanceVehicle(avatar);
+        case 'racecar': return buildRaceCarVehicle(avatar);
+        case 'hearse': return buildHearseVehicle(avatar);
+        default: return buildAmbulanceVehicle(avatar);
+    }
+}
+
+// ===== CLOTHING APPLIER =====
+
+function applyClothing(pg, clothingId, avatar) {
+    var s = avatar.scale || 1.0;
+    if (!clothingId || clothingId === 'cloth_none') return;
+
+    switch (clothingId) {
+        case 'cloth_scrubs': {
+            // Change body color to medical blue by adding a shell over the body
+            var scrubShell = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.34 * s, 0.32 * s, 0.78 * s, 10),
+                new THREE.MeshStandardMaterial({ color: 0x4488cc })
+            );
+            scrubShell.position.set(0, 0.95 * s, 0);
+            pg.add(scrubShell);
+            // V-neck detail
+            var vneck = new THREE.Mesh(
+                new THREE.ConeGeometry(0.08 * s, 0.15 * s, 3),
+                new THREE.MeshStandardMaterial({ color: 0x3377bb })
+            );
+            vneck.position.set(0, 1.28 * s, -0.2 * s);
+            vneck.rotation.z = Math.PI;
+            pg.add(vneck);
+            break;
+        }
+        case 'cloth_labcoat': {
+            // White coat extending below waist
+            var coatBody = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.35 * s, 0.33 * s, 0.8 * s, 10),
+                new THREE.MeshStandardMaterial({ color: 0xf0f0f5 })
+            );
+            coatBody.position.set(0, 0.95 * s, 0);
+            pg.add(coatBody);
+            // Coat tails extending below
+            var coatTail = new THREE.Mesh(
+                new THREE.PlaneGeometry(0.55 * s, 0.4 * s),
+                new THREE.MeshStandardMaterial({ color: 0xf0f0f5, side: THREE.DoubleSide })
+            );
+            coatTail.position.set(0, 0.5 * s, 0.12 * s);
+            coatTail.rotation.x = 0.1;
+            coatTail.name = 'coatTail';
+            pg.add(coatTail);
+            // Front coat panel
+            var frontPanel = new THREE.Mesh(
+                new THREE.PlaneGeometry(0.3 * s, 0.4 * s),
+                new THREE.MeshStandardMaterial({ color: 0xf0f0f5, side: THREE.DoubleSide })
+            );
+            frontPanel.position.set(0, 0.5 * s, -0.12 * s);
+            pg.add(frontPanel);
+            break;
+        }
+        case 'cloth_surgical_gown': {
+            var gown = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.36 * s, 0.34 * s, 0.85 * s, 10),
+                new THREE.MeshStandardMaterial({ color: 0x44aa77 })
+            );
+            gown.position.set(0, 0.92 * s, 0);
+            pg.add(gown);
+            break;
+        }
+        case 'cloth_hawaiian': {
+            // Colorful alternating strips
+            var colors = [0xff6644, 0xffcc22, 0x44cc66, 0xff6644, 0x4488ff];
+            for (var hi = 0; hi < 5; hi++) {
+                var strip = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.34 * s, 0.32 * s, 0.15 * s, 10),
+                    new THREE.MeshStandardMaterial({ color: colors[hi] })
+                );
+                strip.position.set(0, 0.65 * s + hi * 0.15 * s, 0);
+                pg.add(strip);
+            }
+            break;
+        }
+        case 'cloth_tuxedo': {
+            // Black body with white front panel
+            var tuxBody = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.34 * s, 0.32 * s, 0.78 * s, 10),
+                new THREE.MeshStandardMaterial({ color: 0x111111 })
+            );
+            tuxBody.position.set(0, 0.95 * s, 0);
+            pg.add(tuxBody);
+            // White shirt front
+            var shirtFront = new THREE.Mesh(
+                new THREE.PlaneGeometry(0.15 * s, 0.5 * s),
+                new THREE.MeshBasicMaterial({ color: 0xffffff })
+            );
+            shirtFront.position.set(0, 0.95 * s, -0.26 * s);
+            pg.add(shirtFront);
+            // Bow tie
+            var bowTie = new THREE.Mesh(
+                new THREE.BoxGeometry(0.12 * s, 0.04 * s, 0.04 * s),
+                new THREE.MeshBasicMaterial({ color: 0xdd2222 })
+            );
+            bowTie.position.set(0, 1.22 * s, -0.28 * s);
+            pg.add(bowTie);
+            break;
+        }
+        case 'cloth_cape_red': {
+            var cape = new THREE.Mesh(
+                new THREE.PlaneGeometry(0.75 * s, 1.0 * s),
+                new THREE.MeshBasicMaterial({
+                    color: 0xdd2222,
+                    side: THREE.DoubleSide,
+                    transparent: true,
+                    opacity: 0.85
+                })
+            );
+            cape.position.set(0, 0.95 * s, 0.22 * s);
+            cape.rotation.x = 0.15;
+            cape.name = 'cape';
+            pg.add(cape);
+            break;
+        }
+        case 'cloth_cape_rainbow': {
+            var capeMat = new THREE.MeshBasicMaterial({
+                color: 0xff44ff,
+                side: THREE.DoubleSide,
+                transparent: true,
+                opacity: 0.8
+            });
+            var capeR = new THREE.Mesh(
+                new THREE.PlaneGeometry(0.75 * s, 1.0 * s),
+                capeMat
+            );
+            capeR.position.set(0, 0.95 * s, 0.22 * s);
+            capeR.rotation.x = 0.15;
+            capeR.name = 'cape';
+            pg.add(capeR);
+            break;
+        }
+        case 'cloth_jersey': {
+            var jersey = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.34 * s, 0.32 * s, 0.78 * s, 10),
+                new THREE.MeshStandardMaterial({ color: 0xff2222 })
+            );
+            jersey.position.set(0, 0.95 * s, 0);
+            pg.add(jersey);
+            // Number "1" on front (approximate with a box)
+            var numBar = new THREE.Mesh(
+                new THREE.BoxGeometry(0.04 * s, 0.2 * s, 0.02),
+                new THREE.MeshBasicMaterial({ color: 0xffffff })
+            );
+            numBar.position.set(0, 0.95 * s, -0.27 * s);
+            pg.add(numBar);
+            break;
+        }
+        case 'cloth_armor': {
+            var armor = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.37 * s, 0.35 * s, 0.75 * s, 8),
+                new THREE.MeshStandardMaterial({ color: 0x666677, metalness: 0.5, roughness: 0.4 })
+            );
+            armor.position.set(0, 0.95 * s, 0);
+            pg.add(armor);
+            // Shoulder pads
+            for (var asp = -1; asp <= 1; asp += 2) {
+                var pad = new THREE.Mesh(
+                    new THREE.SphereGeometry(0.12 * s, 6, 6),
+                    new THREE.MeshStandardMaterial({ color: 0x777788, metalness: 0.5 })
+                );
+                pad.position.set(asp * 0.4 * s, 1.15 * s, 0);
+                pg.add(pad);
+            }
+            break;
+        }
+    }
+}
+
+// ===== MAIN BUILD FUNCTION =====
+
+export function buildPlayer() {
     var avatar = getAvatarConfig();
     var equipped = storage.get('equipped');
+
+    // Check if this is a vehicle avatar
+    if (avatar.isVehicle) {
+        return buildVehicle(avatar);
+    }
+
+    // Build humanoid character
+    return buildHumanoid(avatar, equipped);
+}
+
+function buildHumanoid(avatar, equipped) {
+    var pg = new THREE.Group();
     var hatItem = null;
     var gearItem = null;
+    var clothingId = equipped.clothing || 'cloth_none';
 
     // Find hat and gear
     for (var si = 0; si < SHOP_ITEMS.length; si++) {
@@ -103,18 +607,13 @@ export function buildPlayer() {
 
     var s = avatar.scale || 1.0;
 
-    // ===== CHIBI PROPORTIONS =====
-    // Head:body ratio ~1:2.5 (head is ~40% of body height visually)
-    // Total character height ~2.0 units
-    // Head center at ~1.7, body center at ~0.95
-
     // ===== BODY (rounded capsule) =====
     var bodyGroup = buildCapsuleBody(0.32 * s, 0.30 * s, 0.75 * s, avatar.bodyColor);
     bodyGroup.position.set(0, 0.95 * s, 0);
     bodyGroup.castShadow = true;
     pg.add(bodyGroup);
 
-    // Collar / neckline (torus for roundness)
+    // Collar / neckline
     var collar = new THREE.Mesh(
         new THREE.TorusGeometry(0.25 * s, 0.05 * s, 6, 12),
         new THREE.MeshStandardMaterial({ color: 0xeeeeff })
@@ -124,7 +623,7 @@ export function buildPlayer() {
     pg.add(collar);
 
     // ===== HEAD (large sphere — chibi proportions) =====
-    var headRadius = 0.38 * s; // much bigger relative to body
+    var headRadius = 0.38 * s;
     var head = new THREE.Mesh(
         new THREE.SphereGeometry(headRadius, 14, 14),
         new THREE.MeshStandardMaterial({ color: avatar.skinColor })
@@ -133,7 +632,7 @@ export function buildPlayer() {
     head.name = 'head';
     pg.add(head);
 
-    // ===== HAIR (larger, rounder) =====
+    // ===== HAIR =====
     var hair = new THREE.Mesh(
         new THREE.SphereGeometry(headRadius * 0.95, 12, 10, 0, Math.PI * 2, 0, Math.PI * 0.55),
         new THREE.MeshStandardMaterial({ color: avatar.hairColor })
@@ -141,7 +640,6 @@ export function buildPlayer() {
     hair.position.set(0, 1.75 * s, 0);
     pg.add(hair);
 
-    // Hair back (gives volume)
     var hairBack = new THREE.Mesh(
         new THREE.SphereGeometry(headRadius * 0.88, 10, 8, 0, Math.PI * 2, 0.3, Math.PI * 0.5),
         new THREE.MeshStandardMaterial({ color: avatar.hairColor })
@@ -149,27 +647,24 @@ export function buildPlayer() {
     hairBack.position.set(0, 1.72 * s, 0.08 * s);
     pg.add(hairBack);
 
-    // ===== EYES (much bigger and more expressive) =====
+    // ===== EYES =====
     var eyeWhiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
     var eyeColorMat = new THREE.MeshBasicMaterial({ color: 0x222244 });
     var eyeHighlightMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
 
-    // Robot gets glowing eyes
     if (avatar.glowColor) {
         eyeColorMat = new THREE.MeshBasicMaterial({ color: avatar.glowColor });
     }
 
     for (var ex = -1; ex <= 1; ex += 2) {
-        // Eye white (large sphere for expressiveness)
         var eyeW = new THREE.Mesh(
             new THREE.SphereGeometry(0.10 * s, 8, 8),
             eyeWhiteMat
         );
         eyeW.position.set(ex * 0.13 * s, 1.72 * s, -0.30 * s);
-        eyeW.scale.set(1, 1.1, 0.7); // slightly oval, flattened front-back
+        eyeW.scale.set(1, 1.1, 0.7);
         pg.add(eyeW);
 
-        // Iris/pupil (colored, large)
         var eyeIris = new THREE.Mesh(
             new THREE.SphereGeometry(0.065 * s, 8, 8),
             eyeColorMat
@@ -177,7 +672,6 @@ export function buildPlayer() {
         eyeIris.position.set(ex * 0.13 * s, 1.72 * s, -0.35 * s);
         pg.add(eyeIris);
 
-        // Pupil (dark center)
         var pupil = new THREE.Mesh(
             new THREE.SphereGeometry(0.035 * s, 6, 6),
             new THREE.MeshBasicMaterial({ color: 0x000000 })
@@ -185,7 +679,6 @@ export function buildPlayer() {
         pupil.position.set(ex * 0.13 * s, 1.72 * s, -0.38 * s);
         pg.add(pupil);
 
-        // Eye highlight (small white dot for life)
         var highlight = new THREE.Mesh(
             new THREE.SphereGeometry(0.02 * s, 4, 4),
             eyeHighlightMat
@@ -194,7 +687,7 @@ export function buildPlayer() {
         pg.add(highlight);
     }
 
-    // ===== EYEBROWS (small arcs above eyes) =====
+    // ===== EYEBROWS =====
     for (var bx = -1; bx <= 1; bx += 2) {
         var brow = new THREE.Mesh(
             new THREE.TorusGeometry(0.06 * s, 0.015 * s, 4, 8, Math.PI * 0.8),
@@ -206,17 +699,17 @@ export function buildPlayer() {
         pg.add(brow);
     }
 
-    // ===== MOUTH / SMILE (torus arc) =====
+    // ===== MOUTH / SMILE =====
     var smile = new THREE.Mesh(
         new THREE.TorusGeometry(0.07 * s, 0.018 * s, 6, 10, Math.PI),
         new THREE.MeshBasicMaterial({ color: 0xdd5544 })
     );
     smile.position.set(0, 1.58 * s, -0.33 * s);
-    smile.rotation.z = Math.PI; // upside down arc = smile
+    smile.rotation.z = Math.PI;
     smile.name = 'mouth';
     pg.add(smile);
 
-    // ===== CHEEK BLUSH (subtle pink circles) =====
+    // ===== CHEEK BLUSH =====
     var blushMat = new THREE.MeshBasicMaterial({ color: 0xff8888, transparent: true, opacity: 0.25 });
     for (var cx = -1; cx <= 1; cx += 2) {
         var blush = new THREE.Mesh(
@@ -227,7 +720,7 @@ export function buildPlayer() {
         pg.add(blush);
     }
 
-    // ===== NOSE (tiny sphere) =====
+    // ===== NOSE =====
     var nose = new THREE.Mesh(
         new THREE.SphereGeometry(0.025 * s, 6, 6),
         new THREE.MeshStandardMaterial({ color: avatar.skinColor })
@@ -235,7 +728,7 @@ export function buildPlayer() {
     nose.position.set(0, 1.65 * s, -0.37 * s);
     pg.add(nose);
 
-    // ===== LEGS (rounded cylinders) =====
+    // ===== LEGS =====
     var leftLegGroup = buildRoundedLimb(0.10 * s, 0.50 * s, avatar.pantsColor);
     leftLegGroup.position.set(-0.14 * s, 0.30 * s, 0);
     leftLegGroup.name = 'leftLeg';
@@ -246,7 +739,7 @@ export function buildPlayer() {
     rightLegGroup.name = 'rightLeg';
     pg.add(rightLegGroup);
 
-    // ===== SHOES (bright, rounded) =====
+    // ===== SHOES =====
     var shoeColor = avatar.shoeColor || 0xff3333;
     var shoeMat = new THREE.MeshStandardMaterial({ color: shoeColor });
 
@@ -254,7 +747,7 @@ export function buildPlayer() {
         new THREE.SphereGeometry(0.12 * s, 8, 6),
         shoeMat
     );
-    shoeL.scale.set(1.0, 0.55, 1.4); // flattened, elongated forward
+    shoeL.scale.set(1.0, 0.55, 1.4);
     shoeL.position.set(0, -0.28 * s, -0.03 * s);
     leftLegGroup.add(shoeL);
 
@@ -266,7 +759,7 @@ export function buildPlayer() {
     shoeR.position.set(0, -0.28 * s, -0.03 * s);
     rightLegGroup.add(shoeR);
 
-    // ===== ARMS (rounded cylinders) =====
+    // ===== ARMS =====
     var armColor = avatar.bodyColor;
     var leftArmGroup = buildRoundedLimb(0.08 * s, 0.40 * s, armColor);
     leftArmGroup.position.set(-0.38 * s, 0.95 * s, 0);
@@ -278,7 +771,7 @@ export function buildPlayer() {
     rightArmGroup.name = 'rightArm';
     pg.add(rightArmGroup);
 
-    // ===== HANDS (small spheres at arm tips) =====
+    // ===== HANDS =====
     var handMat = new THREE.MeshStandardMaterial({ color: avatar.skinColor });
     var handL = new THREE.Mesh(new THREE.SphereGeometry(0.06 * s, 6, 6), handMat);
     handL.position.set(0, -0.24 * s, 0);
@@ -290,8 +783,8 @@ export function buildPlayer() {
 
     // ===== AVATAR SPECIAL FEATURES =====
 
-    // Cape (Superhero)
-    if (avatar.hasCape) {
+    // Cape (Superhero) — only if no clothing cape is set
+    if (avatar.hasCape && clothingId !== 'cloth_cape_red' && clothingId !== 'cloth_cape_rainbow') {
         var cape = new THREE.Mesh(
             new THREE.PlaneGeometry(0.75 * s, 1.0 * s),
             new THREE.MeshBasicMaterial({
@@ -333,7 +826,6 @@ export function buildPlayer() {
         wizHat.position.set(0, 2.10 * s, 0);
         pg.add(wizHat);
 
-        // Brim
         var brim = new THREE.Mesh(
             new THREE.TorusGeometry(0.38 * s, 0.04 * s, 4, 14),
             new THREE.MeshStandardMaterial({ color: avatar.hatColor || 0x6622aa })
@@ -342,7 +834,6 @@ export function buildPlayer() {
         brim.rotation.x = Math.PI / 2;
         pg.add(brim);
 
-        // Stars on wizard hat
         var starMat = new THREE.MeshBasicMaterial({ color: 0xffdd44 });
         for (var ws = 0; ws < 3; ws++) {
             var star = new THREE.Mesh(
@@ -359,9 +850,8 @@ export function buildPlayer() {
         }
     }
 
-    // ===== ZOMBIE special: ragged appearance =====
+    // Zombie special
     if (avatar.id === 'avatar_zombie') {
-        // Dark circles under eyes
         var darkCircleMat = new THREE.MeshBasicMaterial({ color: 0x335533, transparent: true, opacity: 0.5 });
         for (var zx = -1; zx <= 1; zx += 2) {
             var darkCircle = new THREE.Mesh(
@@ -373,8 +863,8 @@ export function buildPlayer() {
         }
     }
 
-    // ===== ATTENDING special: white coat tails =====
-    if (avatar.id === 'avatar_attending') {
+    // Attending special: white coat tails (only if no clothing overrides)
+    if (avatar.id === 'avatar_attending' && clothingId === 'cloth_none') {
         var coatTail = new THREE.Mesh(
             new THREE.PlaneGeometry(0.55 * s, 0.5 * s),
             new THREE.MeshStandardMaterial({
@@ -388,6 +878,9 @@ export function buildPlayer() {
         pg.add(coatTail);
     }
 
+    // ===== APPLY CLOTHING =====
+    applyClothing(pg, clothingId, avatar);
+
     // ===== EQUIPMENT: HAT =====
     if (hatItem && hatItem.color && !avatar.hasWizardHat && !avatar.hasAntenna) {
         var hat;
@@ -398,7 +891,6 @@ export function buildPlayer() {
                 new THREE.CylinderGeometry(0.24 * s, 0.30 * s, 0.15 * s, 8),
                 new THREE.MeshBasicMaterial({ color: hatItem.color })
             );
-            // Crown points
             for (var ci = 0; ci < 5; ci++) {
                 var point = new THREE.Mesh(
                     new THREE.ConeGeometry(0.04 * s, 0.1 * s, 4),
@@ -420,7 +912,6 @@ export function buildPlayer() {
                 new THREE.SphereGeometry(0.30 * s, 8, 6, 0, Math.PI * 2, 0, Math.PI / 2),
                 new THREE.MeshStandardMaterial({ color: hatItem.color })
             );
-            // Horns
             for (var hx = -1; hx <= 1; hx += 2) {
                 var horn = new THREE.Mesh(
                     new THREE.ConeGeometry(0.05 * s, 0.28 * s, 6),
@@ -452,8 +943,74 @@ export function buildPlayer() {
             );
             puff.position.set(0, 0.18 * s, 0);
             hat.add(puff);
+        } else if (hatItem.id === 'hat_graduation') {
+            // Mortarboard
+            hat = new THREE.Group();
+            var board = new THREE.Mesh(
+                new THREE.BoxGeometry(0.5 * s, 0.03 * s, 0.5 * s),
+                new THREE.MeshStandardMaterial({ color: 0x111111 })
+            );
+            hat.add(board);
+            var capBase = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.22 * s, 0.24 * s, 0.12 * s, 8),
+                new THREE.MeshStandardMaterial({ color: 0x111111 })
+            );
+            capBase.position.y = -0.06 * s;
+            hat.add(capBase);
+            // Tassel
+            var tassel = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.01 * s, 0.01 * s, 0.15 * s, 4),
+                new THREE.MeshBasicMaterial({ color: 0xffcc00 })
+            );
+            tassel.position.set(0.2 * s, -0.05 * s, 0);
+            hat.add(tassel);
+        } else if (hatItem.id === 'hat_cowboy') {
+            hat = new THREE.Group();
+            var cowboyTop = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.18 * s, 0.2 * s, 0.2 * s, 8),
+                new THREE.MeshStandardMaterial({ color: hatItem.color })
+            );
+            hat.add(cowboyTop);
+            var cowboyBrim = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.4 * s, 0.4 * s, 0.03 * s, 12),
+                new THREE.MeshStandardMaterial({ color: hatItem.color })
+            );
+            cowboyBrim.position.y = -0.08 * s;
+            hat.add(cowboyBrim);
+        } else if (hatItem.id === 'hat_tiara') {
+            hat = new THREE.Mesh(
+                new THREE.TorusGeometry(0.28 * s, 0.025 * s, 6, 12, Math.PI),
+                new THREE.MeshBasicMaterial({ color: 0xffd700 })
+            );
+            hat.rotation.x = -0.3;
+            // Add gems
+            for (var gi = 0; gi < 3; gi++) {
+                var gem = new THREE.Mesh(
+                    new THREE.OctahedronGeometry(0.03 * s, 0),
+                    new THREE.MeshBasicMaterial({ color: gi === 1 ? 0xff2244 : 0x44aaff })
+                );
+                var gAngle = (gi / 3) * Math.PI;
+                gem.position.set(Math.cos(gAngle) * 0.28 * s, Math.sin(gAngle) * 0.28 * s, 0);
+                hat.add(gem);
+            }
+        } else if (hatItem.id === 'hat_propeller') {
+            hat = new THREE.Group();
+            var propCap = new THREE.Mesh(
+                new THREE.SphereGeometry(0.26 * s, 8, 6, 0, Math.PI * 2, 0, Math.PI / 2),
+                new THREE.MeshStandardMaterial({ color: hatItem.color })
+            );
+            hat.add(propCap);
+            // Propeller blades
+            for (var pi = 0; pi < 3; pi++) {
+                var blade = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.3 * s, 0.02 * s, 0.06 * s),
+                    new THREE.MeshBasicMaterial({ color: [0xff4444, 0x44ff44, 0x4444ff][pi] })
+                );
+                blade.rotation.y = (pi / 3) * Math.PI * 2;
+                blade.position.y = 0.12 * s;
+                hat.add(blade);
+            }
         } else {
-            // Default hat (cap, headlamp)
             hat = new THREE.Mesh(
                 new THREE.CylinderGeometry(0.30 * s, 0.32 * s, 0.12 * s, 8),
                 new THREE.MeshStandardMaterial({ color: hatItem.color })
@@ -466,9 +1023,39 @@ export function buildPlayer() {
                 lamp.position.set(0, 0.02 * s, -0.30 * s);
                 hat.add(lamp);
             }
+            if (hatItem.id === 'hat_headmirror') {
+                var mirror = new THREE.Mesh(
+                    new THREE.CircleGeometry(0.08 * s, 10),
+                    new THREE.MeshBasicMaterial({ color: 0xcccccc })
+                );
+                mirror.position.set(0, 0.02 * s, -0.30 * s);
+                hat.add(mirror);
+            }
+            if (hatItem.id === 'hat_beanie') {
+                // Override shape for beanie - rounded
+                hat.geometry.dispose();
+                hat.geometry = new THREE.SphereGeometry(0.30 * s, 8, 6, 0, Math.PI * 2, 0, Math.PI * 0.45);
+            }
+            if (hatItem.id === 'hat_bandana') {
+                // Make it flatter
+                hat.scale.y = 0.5;
+            }
+            if (hatItem.id === 'hat_tophat') {
+                hat.geometry.dispose();
+                hat.geometry = new THREE.CylinderGeometry(0.2 * s, 0.22 * s, 0.35 * s, 8);
+                // Brim
+                var topBrim = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.32 * s, 0.32 * s, 0.03 * s, 10),
+                    new THREE.MeshStandardMaterial({ color: hatItem.color })
+                );
+                topBrim.position.y = -0.16 * s;
+                hat.add(topBrim);
+            }
         }
-        hat.position.set(0, hatY, 0);
-        pg.add(hat);
+        if (hat) {
+            hat.position.set(0, hatY, 0);
+            pg.add(hat);
+        }
     }
 
     // ===== EQUIPMENT: GEAR =====
@@ -481,7 +1068,6 @@ export function buildPlayer() {
             steth.position.set(0, 1.20 * s, -0.10 * s);
             steth.rotation.x = Math.PI / 2.5;
             pg.add(steth);
-            // Chest piece
             var chestPiece = new THREE.Mesh(
                 new THREE.CylinderGeometry(0.04 * s, 0.03 * s, 0.03 * s, 8),
                 new THREE.MeshStandardMaterial({ color: 0xcccccc, metalness: 0.6 })
@@ -509,7 +1095,6 @@ export function buildPlayer() {
             syringe.position.set(0.33 * s, 0.95 * s, 0);
             syringe.rotation.z = 0.3;
             pg.add(syringe);
-            // Needle tip
             var needleTip = new THREE.Mesh(
                 new THREE.ConeGeometry(0.01 * s, 0.1 * s, 4),
                 new THREE.MeshBasicMaterial({ color: 0xcccccc })
@@ -547,7 +1132,6 @@ export function buildPlayer() {
             hammerStick.position.set(0.38 * s, 0.85 * s, 0);
             pg.add(hammerStick);
         } else if (gearItem.id === 'gear_mask') {
-            // Rounded surgical mask
             var mask = new THREE.Mesh(
                 new THREE.SphereGeometry(0.18 * s, 8, 6, 0, Math.PI * 2, Math.PI * 0.35, Math.PI * 0.3),
                 new THREE.MeshBasicMaterial({ color: gearItem.color, side: THREE.DoubleSide })
@@ -555,6 +1139,66 @@ export function buildPlayer() {
             mask.position.set(0, 1.58 * s, -0.15 * s);
             mask.rotation.x = Math.PI;
             pg.add(mask);
+        } else if (gearItem.id === 'gear_coffee') {
+            var cup = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.06 * s, 0.05 * s, 0.15 * s, 8),
+                new THREE.MeshStandardMaterial({ color: 0x8B4513 })
+            );
+            cup.position.set(0.35 * s, 0.80 * s, -0.1 * s);
+            pg.add(cup);
+        } else if (gearItem.id === 'gear_textbook') {
+            var book = new THREE.Mesh(
+                new THREE.BoxGeometry(0.18 * s, 0.24 * s, 0.05 * s),
+                new THREE.MeshStandardMaterial({ color: 0x2255aa })
+            );
+            book.position.set(-0.36 * s, 0.80 * s, -0.1 * s);
+            pg.add(book);
+        } else if (gearItem.id === 'gear_badge') {
+            var badge = new THREE.Mesh(
+                new THREE.BoxGeometry(0.1 * s, 0.12 * s, 0.02 * s),
+                new THREE.MeshBasicMaterial({ color: 0xffffff })
+            );
+            badge.position.set(-0.25 * s, 1.1 * s, -0.25 * s);
+            pg.add(badge);
+        } else if (gearItem.id === 'gear_wings') {
+            for (var wsx = -1; wsx <= 1; wsx += 2) {
+                var wing = new THREE.Mesh(
+                    new THREE.PlaneGeometry(0.5 * s, 0.6 * s),
+                    new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, transparent: true, opacity: 0.7 })
+                );
+                wing.position.set(wsx * 0.4 * s, 1.1 * s, 0.15 * s);
+                wing.rotation.y = wsx * 0.3;
+                pg.add(wing);
+            }
+        } else if (gearItem.id === 'gear_backpack') {
+            var backpack = new THREE.Mesh(
+                new THREE.BoxGeometry(0.25 * s, 0.3 * s, 0.15 * s),
+                new THREE.MeshStandardMaterial({ color: 0x44aa44 })
+            );
+            backpack.position.set(0, 0.90 * s, 0.25 * s);
+            pg.add(backpack);
+        } else if (gearItem.id === 'gear_shield_item') {
+            var shield = new THREE.Mesh(
+                new THREE.CircleGeometry(0.2 * s, 8),
+                new THREE.MeshStandardMaterial({ color: 0x4488ff, side: THREE.DoubleSide })
+            );
+            shield.position.set(-0.4 * s, 0.85 * s, -0.1 * s);
+            pg.add(shield);
+        } else if (gearItem.id === 'gear_katana') {
+            var blade = new THREE.Mesh(
+                new THREE.BoxGeometry(0.03 * s, 0.5 * s, 0.01 * s),
+                new THREE.MeshStandardMaterial({ color: 0xcccccc, metalness: 0.7 })
+            );
+            blade.position.set(0.4 * s, 1.0 * s, 0.15 * s);
+            blade.rotation.z = 0.2;
+            pg.add(blade);
+            var bHandle = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.02 * s, 0.02 * s, 0.15 * s, 6),
+                new THREE.MeshStandardMaterial({ color: 0x664422 })
+            );
+            bHandle.position.set(0.38 * s, 0.72 * s, 0.15 * s);
+            bHandle.rotation.z = 0.2;
+            pg.add(bHandle);
         }
     }
 
@@ -562,6 +1206,31 @@ export function buildPlayer() {
 }
 
 export function getPlayerLimbs(playerGroup) {
+    // For vehicles, return wheel references
+    if (playerGroup.userData && playerGroup.userData.isVehicle) {
+        var wheels = [];
+        var lights = [];
+        playerGroup.traverse(function (child) {
+            if (child.name && child.name.indexOf('wheel_') === 0) wheels.push(child);
+            if (child.name && child.name.indexOf('light_') === 0) lights.push(child);
+        });
+        return {
+            wheels: wheels,
+            lights: lights,
+            body: playerGroup.getObjectByName('vehicleBody'),
+            // Provide null for humanoid limbs so engine doesn't crash
+            leftLeg: null,
+            rightLeg: null,
+            leftArm: null,
+            rightArm: null,
+            cape: null,
+            head: null,
+            mouth: null,
+            coatTail: null,
+            isVehicle: true
+        };
+    }
+
     return {
         leftLeg: playerGroup.getObjectByName('leftLeg'),
         rightLeg: playerGroup.getObjectByName('rightLeg'),
@@ -570,6 +1239,7 @@ export function getPlayerLimbs(playerGroup) {
         cape: playerGroup.getObjectByName('cape'),
         head: playerGroup.getObjectByName('head'),
         mouth: playerGroup.getObjectByName('mouth'),
-        coatTail: playerGroup.getObjectByName('coatTail')
+        coatTail: playerGroup.getObjectByName('coatTail'),
+        isVehicle: false
     };
 }
