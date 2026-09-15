@@ -4,14 +4,15 @@
  * FIXES APPLIED:
  * - FIX #1: Static import of exammonster.js
  * - FIX #2: Protected PowerUpFX and TrailSystem from cleanupTrack()
- * - FIX #3: Faceplant triggers on death even without monster, with dramatic camera
+ * - FIX #3: Faceplant triggers on death with camera animation + proper reset
  * - FIX #4: Removed duplicate audio.crossfadeMusic() in transitionSkin()
- * - FIX #5: Heart spawn threshold restored to 3 encounters (original design)
- * - FIX #6: Rush propels player through gate within 0.5s (gate teleport)
- * - FIX #7: Monster starts at Z=20, wider visibility, faster approach
- * - FIX #8: Track name delayed until after countdown
- * - FIX #9: Player faces correct direction (no extra rotation)
- * - FIX #10: Monster consume + faceplant camera animation
+ * - FIX #5: Heart spawn threshold at original 3 encounters
+ * - FIX #6: Rush propels player through gate within 0.5s (calculated speed)
+ * - FIX #7: Monster positioned and visible correctly relative to camera
+ * - FIX #8: Track name shows right after countdown (not delayed 4s)
+ * - FIX #9: Camera fully reset on new run start
+ * - FIX #10: Monster consume + faceplant with longer delay before endRun
+ * - FIX #11: Autopilot auto-rushes through correct gate
  */
 
 import * as THREE from 'three';
@@ -37,7 +38,7 @@ import { PowerUpFX } from './powerupfx.js';
 export { SHOP_ITEMS, QUESTS, AVATARS, ACHIEVEMENTS, CONTINUE_COST } from './shopdata.js';
 import { CONTINUE_COST } from './shopdata.js';
 
-// FIX #1: Static import instead of dynamic import with top-level await
+// FIX #1: Static import
 import { buildExamMonster, getMonsterParts } from './exammonster.js';
 
 var LANE_X = [-3, 0, 3];
@@ -143,6 +144,7 @@ class Game {
         this.rushBonus = 0;
         this.rushInvulnerable = false;
         this.rushPropelTimer = 0;
+        this.rushSpeedOverride = 0;
 
         this.card = null;
         this.gates = [];
@@ -190,7 +192,6 @@ class Game {
         this.runCoinsCollected = 0;
         this.runPowerupsCollected = 0;
 
-        // Map transition system
         this.encountersUntilTransition = 10;
         this.transitionActive = false;
         this.transitionTimer = 0;
@@ -199,24 +200,28 @@ class Game {
         this.transitionNewSkin = null;
         this.transitionProgress = 0;
 
-        // Exam Monster system
+        // FIX #7: Monster starts behind camera but within render distance
+        // Camera is at Z=10 looking at Z=-20. Monster at positive Z is BEHIND the player.
+        // For the monster to be visible, it needs to be between the camera and some distance behind it.
+        // Actually, the camera looks FORWARD (negative Z). The monster should be BEHIND the player
+        // at positive Z values, but the camera at Z=10 looks toward Z=-20.
+        // So the monster at Z=12-18 would be BEHIND the camera and invisible.
+        // The monster needs to be in FRONT of the camera but behind the player.
+        // Player is at Z=0. Camera is at Z=10. Camera looks at Z=-20.
+        // Monster should be between player (Z=0) and camera (Z=10) to be visible.
+        // So monster Z should be between 2 and 9 to be visible.
         this.examMonster = null;
         this.monsterParts = null;
-        this.monsterZ = 20;
-        this.monsterTargetZ = 20;
+        this.monsterZ = 25; // starts far behind (invisible)
+        this.monsterTargetZ = 25;
         this.monsterVisible = false;
         this.monsterWarningPlayed = false;
 
-        // Heart spawn
         this.heartSpawnCounter = 0;
 
-        // Faceplant state
         this.faceplanting = false;
         this.faceplantTimer = 0;
-
-        // FIX #8: Track name delay
-        this._skinNamePending = null;
-        this._skinNameDelay = 0;
+        this.faceplantTotalDuration = 0;
 
         // Callbacks
         this.onEncounterStart = null;
@@ -303,9 +308,13 @@ class Game {
         }
         this.examMonster = buildExamMonster();
         this.monsterParts = getMonsterParts(this.examMonster);
-        // FIX #7: Monster positioned behind camera but within render distance
+        // FIX #7: Position monster between player and camera
+        // Player is at Z=0, camera at Z=10
+        // Monster starts far away (invisible) and approaches toward Z=3-8 range
         this.examMonster.position.set(0, 1.5, this.monsterZ);
         this.examMonster.visible = false;
+        // FIX #7: Monster faces negative Z (toward the player, away from camera)
+        this.examMonster.rotation.y = Math.PI;
         this.scene.add(this.examMonster);
     }
 
@@ -365,7 +374,6 @@ class Game {
                 this.scene.add(this.examMonster);
             }
 
-            // FIX #2: Re-add PowerUpFX and TrailSystem
             this._readdPowerupFX();
             this._readdTrailSystem();
 
@@ -405,14 +413,14 @@ class Game {
     updateExamMonster(dt) {
         if (!this.examMonster) return;
 
-        // Lerp monster toward target - faster rate
+        // Lerp monster toward target
         this.monsterZ += (this.monsterTargetZ - this.monsterZ) * dt * 1.2;
 
         if (this.monsterZ < 3) this.monsterZ = 3;
 
-        // FIX #7: Monster visible when Z < 18 (camera is at Z=10, looking at Z=-20)
-        // Monster is BEHIND the player (positive Z), camera can see it
-        var shouldBeVisible = this.monsterZ < 16;
+        // FIX #7: Monster is visible when between Z=3 and Z=9
+        // (between player at Z=0 and camera at Z=10)
+        var shouldBeVisible = this.monsterZ < 9;
         if (shouldBeVisible !== this.monsterVisible) {
             this.monsterVisible = shouldBeVisible;
             this.examMonster.visible = shouldBeVisible;
@@ -421,15 +429,17 @@ class Game {
         this.examMonster.position.set(0, 1.5, this.monsterZ);
 
         if (this.monsterVisible) {
-            var distFactor = Math.max(0.3, 1.0 - (this.monsterZ - 3) / 15);
-            this.examMonster.scale.set(distFactor, distFactor, distFactor);
+            // Scale: larger when closer to camera (Z closer to 9), smaller when closer to player (Z closer to 3)
+            var distFromCamera = 10 - this.monsterZ; // 1 to 7
+            var scaleFactor = Math.max(0.4, 1.0 - distFromCamera * 0.08);
+            this.examMonster.scale.set(scaleFactor, scaleFactor, scaleFactor);
         }
 
-        if (this.monsterZ < 8 && !this.monsterWarningPlayed) {
+        if (this.monsterZ < 6 && !this.monsterWarningPlayed) {
             this.monsterWarningPlayed = true;
             try { audio.play('monsterClose'); } catch (e) {}
         }
-        if (this.monsterZ >= 10) {
+        if (this.monsterZ >= 8) {
             this.monsterWarningPlayed = false;
         }
 
@@ -491,21 +501,17 @@ class Game {
         }
     }
 
-    // FIX #6: Rush should propel through gate within 0.5s
+    // FIX #6: Rush calculates exact speed to reach gate in 0.5s
     addRushStack() {
         if (!this.gatesActive) return;
         if (this.rushStacks < this.maxRushStacks) {
             this.rushStacks++;
             this.rushing = true;
-
             this.rushInvulnerable = true;
 
             // Calculate speed needed to reach gate in 0.5 seconds
             var distToGate = Math.abs(this.gateZ);
-            // We need to cover distToGate in 0.5 seconds
-            // Store the required rush speed multiplier
             this.rushPropelTimer = 0.5;
-            // Calculate the multiplier needed: distance / (baseSpeed * 0.5)
             var neededSpeed = distToGate / 0.5;
             this.rushSpeedOverride = neededSpeed / Math.max(this.speed, 0.01);
 
@@ -540,7 +546,7 @@ class Game {
         this.speedLines = [];
     }
 
-    // FIX #2: cleanupTrack protects PowerUpFX groups and TrailSystem particles
+    // FIX #2: cleanupTrack protects PowerUpFX and TrailSystem
     cleanupTrack() {
         var toRemove = [];
         var self = this;
@@ -589,12 +595,25 @@ class Game {
         this.trackRefs = null;
     }
 
+    // FIX #11: Autopilot now also triggers rush
     collectPowerup(type) {
         switch (type) {
             case 'shield': this.powerups.shield = 999; break;
             case 'magnet': this.powerups.magnet = 10; break;
             case 'double': this.powerups.double = 15; break;
-            case 'autoPilot': this.autoPilotGatesLeft = 1; this.powerups.autoPilot = 999; break;
+            case 'autoPilot':
+                this.autoPilotGatesLeft = 1;
+                this.powerups.autoPilot = 999;
+                // FIX #11: Auto-rush when autopilot is collected
+                if (this.gatesActive) {
+                    // Set target lane to correct answer
+                    for (var ap = 0; ap < this.gates.length; ap++) {
+                        if (this.gates[ap].correct) { this.targetLane = ap; break; }
+                    }
+                    // Trigger rush to push through gate immediately
+                    this.addRushStack();
+                }
+                break;
             case 'scoreFrenzy': this.powerups.scoreFrenzy = 8; break;
         }
         audio.play('powerup');
@@ -668,34 +687,35 @@ class Game {
         this.transitionActive = false;
         this.transitionTimer = 0;
 
-        this.monsterZ = 20;
-        this.monsterTargetZ = 20;
+        this.monsterZ = 25;
+        this.monsterTargetZ = 25;
         this.monsterVisible = false;
         this.monsterWarningPlayed = false;
 
-        // FIX #5: Keep heart spawn threshold at 3 (original)
         this.heartSpawnCounter = 0;
 
         this.faceplanting = false;
         this.faceplantTimer = 0;
+        this.faceplantTotalDuration = 0;
 
-        // FIX #8: Reset skin name delay
-        this._skinNamePending = null;
-        this._skinNameDelay = 0;
-
+        // FIX #9: Fully reset player and camera
         if (this.playerGroup) {
             this.playerGroup.scale.set(1, 1, 1);
             this.playerGroup.position.set(0, 0, 0);
             this.playerGroup.rotation.set(0, 0, 0);
         }
+
+        // FIX #9: Reset camera position and rotation fully
+        this.camera.position.copy(this.cameraBasePos);
+        this.camera.fov = this.baseFOV;
+        this.camera.updateProjectionMatrix();
+        this.camera.lookAt(0, 1, -20);
+
         this.cleanupObjects();
         this.cleanupTrack();
         if (this.powerupFX) this.powerupFX.hideAll();
         this.currentSkin = getRandomSkin();
         this.trackRefs = buildTrack(this.scene, this.currentSkin);
-        this.camera.position.copy(this.cameraBasePos);
-        this.camera.fov = this.baseFOV;
-        this.camera.updateProjectionMatrix();
         this.clock.getDelta();
         this.rebuildPlayer();
         this.createPlayerShadow();
@@ -703,12 +723,10 @@ class Game {
         this._readdPowerupFX();
         this._readdTrailSystem();
 
-        // Create exam monster
         this.createExamMonster();
 
-        // FIX #8: Delay the skin name display so it doesn't overlap countdown
-        this._skinNamePending = this.currentSkin.name;
-        this._skinNameDelay = 4.0; // Show after countdown finishes
+        // FIX #8: Show track name immediately (will be called after countdown by go())
+        // Don't call onSkinSelected here - let it be called after countdown
     }
 
     go() {
@@ -716,6 +734,10 @@ class Game {
         this.paused = false;
         this.clock.getDelta();
         audio.startAmbient(this.currentSkin.name);
+
+        // FIX #8: Show track name right when gameplay starts (after countdown)
+        if (this.onSkinSelected) this.onSkinSelected(this.currentSkin.name);
+
         this.spawnEncounter();
     }
 
@@ -743,10 +765,13 @@ class Game {
             }
         }
 
+        // FIX #11: Autopilot sets lane AND auto-rushes
         if (this.autoPilotGatesLeft > 0) {
             for (var ap = 0; ap < this.gates.length; ap++) {
                 if (this.gates[ap].correct) { this.targetLane = ap; break; }
             }
+            // Auto-rush when autopilot is active and gates spawn
+            this.addRushStack();
         }
 
         this.gateZ = -60;
@@ -788,7 +813,6 @@ class Game {
 
         storage.incrementQuest('q_25enc');
 
-        // Map transition every 10 encounters
         this.encountersUntilTransition--;
         if (this.encountersUntilTransition <= 0) {
             this.encountersUntilTransition = 10;
@@ -803,7 +827,6 @@ class Game {
             }
         }
 
-        // Monster moves faster on wrong answers
         if (this.examMonster) {
             if (!ok) {
                 this.monsterTargetZ -= 4;
@@ -904,7 +927,7 @@ class Game {
                     if (this.onEncounterResolve) this.onEncounterResolve(card, ok);
 
                     // FIX #3 + #10: Trigger faceplant on death
-                    if (this.examMonster && this.monsterZ < 20) {
+                    if (this.examMonster && this.monsterZ < 12) {
                         this._triggerMonsterConsume();
                     } else {
                         this._triggerFaceplant();
@@ -912,12 +935,18 @@ class Game {
 
                     var canContinue = !this.continued && storage.get('coins') >= CONTINUE_COST;
                     if (canContinue && this.onContinuePrompt) {
-                        this.running = false;
-                        this.onContinuePrompt(CONTINUE_COST);
-                    } else {
+                        // FIX #10: Don't stop running during faceplant - let it play out
                         var self = this;
-                        var endDelay = this.faceplanting ? 2000 : 500;
-                        setTimeout(function () { self.endRun(); }, endDelay);
+                        var faceplantDelay = this.faceplanting ? (this.faceplantTotalDuration * 1000 + 500) : 500;
+                        setTimeout(function () {
+                            self.running = false;
+                            self.onContinuePrompt(CONTINUE_COST);
+                        }, faceplantDelay);
+                    } else {
+                        var self2 = this;
+                        // FIX #10: Wait for faceplant to complete before ending
+                        var endDelay = this.faceplanting ? (this.faceplantTotalDuration * 1000 + 500) : 500;
+                        setTimeout(function () { self2.endRun(); }, endDelay);
                     }
                     return;
                 }
@@ -952,12 +981,12 @@ class Game {
 
         if (this.mode === 'daily' && this.encountersDone >= 15) {
             this.waitingForNext = false;
-            var self2 = this;
-            setTimeout(function () { self2.endRun(); }, 600);
+            var self3 = this;
+            setTimeout(function () { self3.endRun(); }, 600);
             return;
         }
 
-        // FIX #5: Heart spawn logic - original threshold of 3
+        // FIX #5: Heart spawn threshold at original 3
         if (this.lives === 1 && this.mode !== 'study') {
             this.heartSpawnCounter++;
             if (this.heartSpawnCounter >= 3) {
@@ -970,17 +999,21 @@ class Game {
     }
 
     _triggerMonsterConsume() {
-        if (!this.examMonster) return;
+        if (!this.examMonster) {
+            this._triggerFaceplant();
+            return;
+        }
 
-        this.monsterTargetZ = 0;
-        this.monsterZ = Math.min(this.monsterZ, 10);
+        this.monsterTargetZ = 2;
+        this.monsterZ = Math.min(this.monsterZ, 7);
         this.examMonster.visible = true;
 
         try { audio.play('monsterConsume'); } catch (e) {}
 
-        // FIX #10: Dramatic faceplant with camera movement
+        // FIX #10: Longer faceplant for monster consume
         this.faceplanting = true;
-        this.faceplantTimer = 1.8;
+        this.faceplantTotalDuration = 2.5;
+        this.faceplantTimer = this.faceplantTotalDuration;
 
         if (this.onPlayerFaceplant) {
             this.onPlayerFaceplant();
@@ -989,10 +1022,11 @@ class Game {
         try { audio.play('faceplant'); } catch (e) {}
     }
 
-    // FIX #3: Standalone faceplant even without monster
+    // FIX #3: Standalone faceplant
     _triggerFaceplant() {
         this.faceplanting = true;
-        this.faceplantTimer = 1.5;
+        this.faceplantTotalDuration = 2.0;
+        this.faceplantTimer = this.faceplantTotalDuration;
 
         if (this.onPlayerFaceplant) {
             this.onPlayerFaceplant();
@@ -1054,7 +1088,7 @@ class Game {
         var currentSpeed = this.speed;
         var rushMult = 1.0 + this.rushStacks;
 
-        // FIX #6: During rush propulsion, use calculated speed to guarantee gate arrival
+        // FIX #6: During rush, use calculated speed override
         if (this.rushPropelTimer > 0) {
             this.rushPropelTimer -= dt;
             if (this.rushSpeedOverride > 0) {
@@ -1070,58 +1104,50 @@ class Game {
 
         var move = currentSpeed * rushMult * dt;
 
-        // FIX #8: Delayed skin name display
-        if (this._skinNamePending && this._skinNameDelay > 0) {
-            this._skinNameDelay -= dt;
-            if (this._skinNameDelay <= 0) {
-                if (this.onSkinSelected) this.onSkinSelected(this._skinNamePending);
-                this._skinNamePending = null;
-            }
-        }
-
-        // FIX #10: Faceplant animation with dramatic camera
+        // FIX #3 + #10: Faceplant animation with camera
         if (this.faceplanting) {
             this.faceplantTimer -= dt;
-            var totalDuration = this.examMonster && this.monsterZ < 15 ? 1.8 : 1.5;
-            var fp = totalDuration - this.faceplantTimer;
+            var totalDur = this.faceplantTotalDuration;
+            var fp = totalDur - this.faceplantTimer; // elapsed time in animation
 
-            if (fp < 0.3) {
-                // Lean forward rapidly
-                this.playerGroup.rotation.x = (fp / 0.3) * 0.8;
-            } else if (fp < 0.6) {
-                // Arms forward
-                this.playerGroup.rotation.x = 0.8 + ((fp - 0.3) / 0.3) * 0.5;
+            if (fp < 0.4) {
+                // Lean forward
+                this.playerGroup.rotation.x = (fp / 0.4) * 0.8;
+            } else if (fp < 0.8) {
+                // Arms forward, more lean
+                this.playerGroup.rotation.x = 0.8 + ((fp - 0.4) / 0.4) * 0.5;
                 if (this.limbs && this.limbs.leftArm) {
-                    this.limbs.leftArm.rotation.x = -1.2 * ((fp - 0.3) / 0.3);
+                    this.limbs.leftArm.rotation.x = -1.2 * ((fp - 0.4) / 0.4);
                 }
                 if (this.limbs && this.limbs.rightArm) {
-                    this.limbs.rightArm.rotation.x = -1.2 * ((fp - 0.3) / 0.3);
+                    this.limbs.rightArm.rotation.x = -1.2 * ((fp - 0.4) / 0.4);
                 }
-            } else if (fp < 1.0) {
+            } else if (fp < 1.5) {
                 // Hit ground
                 this.playerGroup.rotation.x = Math.PI / 2;
                 this.playerGroup.position.y = Math.max(0, this.playerGroup.position.y - dt * 5);
             }
 
-            // FIX #10: Move camera to show the faceplant dramatically
-            var camProgress = Math.min(fp / totalDuration, 1.0);
-            this.camera.position.x = this.cameraBasePos.x + Math.sin(camProgress * Math.PI) * 2;
-            this.camera.position.y = this.cameraBasePos.y - camProgress * 2;
-            this.camera.position.z = this.cameraBasePos.z - camProgress * 3;
+            // FIX #10: Camera swings to show faceplant
+            var camProgress = Math.min(fp / totalDur, 1.0);
+            var eased = Math.sin(camProgress * Math.PI * 0.5); // ease out
+            this.camera.position.x = this.cameraBasePos.x + Math.sin(eased * Math.PI) * 2;
+            this.camera.position.y = this.cameraBasePos.y - eased * 2;
+            this.camera.position.z = this.cameraBasePos.z - eased * 3;
             this.camera.lookAt(this.playerGroup.position.x, 1, this.playerGroup.position.z);
 
             if (this.faceplantTimer <= 0) {
                 this.faceplanting = false;
             }
 
+            // Still update monster during faceplant
+            this.updateExamMonster(dt);
+
             if (this.onHudUpdate) this.onHudUpdate();
             return;
         }
 
-        // Update map transition
         this.updateMapTransition(dt);
-
-        // Update exam monster
         this.updateExamMonster(dt);
 
         // AUTO-PILOT
@@ -1144,7 +1170,6 @@ class Game {
         }
         this.currentLane = this.targetLane;
 
-        // Body tilt
         var tiltTarget = 0;
         if (this.targetLane !== this.prevLane) {
             tiltTarget = (this.targetLane - this.prevLane) * -0.15;
@@ -1156,7 +1181,6 @@ class Game {
         }
         this.playerGroup.rotation.z = this.playerTilt;
 
-        // Jump
         if (this.jumping) {
             this.playerY += this.jumpVel * dt;
             var gravity = 30;
@@ -1174,7 +1198,6 @@ class Game {
         this.wasJumping = this.jumping;
         this.playerGroup.position.y = this.playerY;
 
-        // Slide
         if (this.sliding) {
             this.slideTimer += dt;
             this.playerGroup.scale.y = 0.35;
@@ -1186,7 +1209,6 @@ class Game {
             }
         }
 
-        // Landing squash
         if (this.landingTimer > 0 && !this.sliding) {
             this.landingTimer -= dt;
             this.playerGroup.scale.y = 0.85;
@@ -1195,7 +1217,6 @@ class Game {
             }
         }
 
-        // Stumble animation
         if (this.stumbleTimer > 0) {
             this.stumbleTimer -= dt;
             var stumbleProgress = this.stumbleTimer / 0.3;
@@ -1205,7 +1226,6 @@ class Game {
             }
         }
 
-        // Celebration animation
         if (this.celebrateTimer > 0) {
             this.celebrateTimer -= dt;
             if (this.limbs && this.limbs.rightArm) {
@@ -1220,7 +1240,6 @@ class Game {
             }
         }
 
-        // Running animation
         if (!this.jumping && !this.sliding && this.limbs && this.celebrateTimer <= 0) {
             this.legPhase += currentSpeed * rushMult * dt * 0.8;
             var sw = Math.sin(this.legPhase) * 0.45;
@@ -1240,7 +1259,6 @@ class Game {
             this.playerGroup.position.y = this.playerY + Math.abs(Math.sin(this.legPhase)) * 0.06;
         }
 
-        // Player shadow
         if (this.playerShadow) {
             this.playerShadow.position.x = this.playerGroup.position.x;
             this.playerShadow.position.z = this.playerGroup.position.z;
@@ -1249,12 +1267,10 @@ class Game {
             this.playerShadow.material.opacity = 0.2 * shadowScale;
         }
 
-        // Trail system
         if (this.trailSystem) {
             this.trailSystem.update(dt, this.playerGroup.position.x, this.playerGroup.position.y, this.playerGroup.position.z, this.streak);
         }
 
-        // Power-up visual effects
         if (this.powerupFX) {
             var px = this.playerGroup.position.x;
             var py = this.playerGroup.position.y;
@@ -1262,7 +1278,6 @@ class Game {
             this.powerupFX.update(dt, { x: px, y: py, z: pz }, this.powerups, this.rushStacks);
         }
 
-        // Camera shake
         if (this.shakeTimer > 0) {
             this.shakeTimer -= dt;
             var intensity = this.shakeTimer * 3;
@@ -1274,12 +1289,10 @@ class Game {
             this.camera.position.y = this.cameraBasePos.y;
         }
 
-        // FOV
         var streakVis = getStreakVisualIntensity(this.streak);
         var targetFOV = calculateTargetFOV(this.baseSpeed, currentSpeed * rushMult, this.baseFOV, this.baseFOV + 15 + streakVis.fovBoost, this.rushing);
         updateCameraFOV(this.camera, targetFOV, dt, 2.0);
 
-        // Gates
         if (this.gatesActive) {
             this.gateZ += move;
             for (var gi = 0; gi < this.gateMeshes.length; gi++) {
@@ -1298,7 +1311,6 @@ class Game {
             if (this.gateZ >= 0) this.resolveEncounter();
         }
 
-        // Next encounter timer
         if (this.waitingForNext) {
             this.nextEncounterTimer -= dt;
             if (this.nextEncounterTimer <= 0) {
@@ -1307,21 +1319,18 @@ class Game {
             }
         }
 
-        // Coin spawning
         this.coinSpawnTimer -= dt;
         if (this.coinSpawnTimer <= 0) {
             spawnCoinBatch(this.scene, this.coinMeshes);
             this.coinSpawnTimer = 0.8 + Math.random() * 1.2;
         }
 
-        // Power-up spawning
         this.powerupSpawnTimer -= dt;
         if (this.powerupSpawnTimer <= 0) {
             spawnPowerup(this.scene, this.coinMeshes);
             this.powerupSpawnTimer = 15 + Math.random() * 10;
         }
 
-        // Environment props
         this.envPropSpawnTimer -= dt;
         if (this.envPropSpawnTimer <= 0) {
             spawnEnvProp(this.scene, this.envPropMeshes, storage.get('selectedSubjects'));
@@ -1337,7 +1346,6 @@ class Game {
             }
         }
 
-        // ANIMATED TRACK ELEMENTS
         if (this.trackRefs) {
             if (this.trackRefs.runningLights) {
                 updateRunningLights(this.trackRefs.runningLights, this.elapsedTime, currentSpeed * rushMult);
@@ -1359,7 +1367,6 @@ class Game {
             }
         }
 
-        // Speed lines
         var speedRatio = this.speed / this.baseSpeed;
         if (speedRatio > 1.3 || this.rushing) {
             this.speedLineTimer -= dt;
@@ -1387,7 +1394,6 @@ class Game {
             }
         }
 
-        // Obstacles
         for (var oi = this.obstacleMeshes.length - 1; oi >= 0; oi--) {
             var ob = this.obstacleMeshes[oi];
             ob.position.z += move;
@@ -1422,7 +1428,6 @@ class Game {
             }
         }
 
-        // Coins, power-ups, and hearts
         for (var ci = this.coinMeshes.length - 1; ci >= 0; ci--) {
             var c = this.coinMeshes[ci];
             c.position.z += move;
@@ -1481,24 +1486,20 @@ class Game {
             }
         }
 
-        // Power-up timers
         var timedPowerups = ['double', 'magnet', 'scoreFrenzy'];
         for (var pk = 0; pk < timedPowerups.length; pk++) {
             var key = timedPowerups[pk];
             if (this.powerups[key] > 0) this.powerups[key] -= dt;
         }
 
-        // Feedback timers
         if (this.feedbackTimer > 0) this.feedbackTimer -= dt;
         if (this.teachTimer > 0) this.teachTimer -= dt;
 
-        // Speed progression
         if (this.mode !== 'study') {
             this.speed = Math.min(this.baseSpeed * 2.0, this.baseSpeed + this.encountersDone * 0.3);
         }
         audio.updateSpeedPitch(this.baseSpeed, this.speed);
 
-        // HUD update
         if (this.onHudUpdate) this.onHudUpdate();
     }
 
@@ -1521,17 +1522,21 @@ class Game {
 
         this.running = false;
         this.paused = false;
+        this.faceplanting = false;
         document.getElementById('pauseOverlay').classList.remove('active');
         document.getElementById('rushEl').classList.remove('show');
 
+        // FIX #9: Fully reset camera
         this.camera.position.copy(this.cameraBasePos);
         this.camera.fov = this.baseFOV;
         this.camera.updateProjectionMatrix();
+        this.camera.lookAt(0, 1, -20);
 
         if (this.playerGroup) {
             this.playerGroup.rotation.z = 0;
             this.playerGroup.rotation.x = 0;
             this.playerGroup.scale.set(1, 1, 1);
+            this.playerGroup.position.set(0, 0, 0);
         }
 
         if (this.powerupFX) this.powerupFX.hideAll();
