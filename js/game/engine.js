@@ -1,30 +1,15 @@
 /**
  * engine.js — Core game engine
  *
- * All features through Final Phase + Workstream 2 updates:
- * - Scrolling ground lines, wall markers, wall scroll panels, skybox updates
- * - Auto-pilot fix: decrement only after encounter resolves
- * - Celebration, stumble, landing animations
- * - Player shadow
- * - Gate transformation effects
- * - Golden Doctor unlock with proper achievement notification
- * - Speed timer support
- * - Confetti trigger on personal best
- * - endRun idempotency guard
- * - Daily encounter cap (no 16th encounter)
- * - Coin audio with lane panning
- * - Quest tracking for all quest types
- * - Consecutive daily streak logic
- *
- * NEW (Workstream 2):
- * - Map transition every 10 encounters with smooth crossfade
- * - Rush mechanic overhaul: invulnerability + propulsion through gate
- * - Heart pickups when player has 1 life
- * - Exam Monster chase entity
- * - Autopilot nerfed to 1 gate
- * - Countdown note (actual fix in ui.js - 500ms → 1000ms)
- * - Card freshness weighting (delegated to gates.js)
- * - Deselect all = all subjects (delegated to gates.js)
+ * FIXES APPLIED:
+ * - FIX #1: Changed exammonster.js from top-level await dynamic import to static import
+ * - FIX #2: Protected PowerUpFX and TrailSystem from cleanupTrack() disposal
+ * - FIX #3: Faceplant can trigger even without exam monster (on death)
+ * - FIX #4: Removed duplicate audio.crossfadeMusic() call in transitionSkin()
+ * - FIX #5: Lowered heart spawn threshold from 3 encounters to 1
+ * - FIX #6: Extended rush propulsion timer from 0.5s to 1.0s
+ * - FIX #7: Monster starts closer (Z=20 instead of 25) for earlier visibility
+ * - FIX #8: Monster approaches faster on wrong answers (-4 instead of -3)
  */
 
 import * as THREE from 'three';
@@ -50,18 +35,9 @@ import { PowerUpFX } from './powerupfx.js';
 export { SHOP_ITEMS, QUESTS, AVATARS, ACHIEVEMENTS, CONTINUE_COST } from './shopdata.js';
 import { CONTINUE_COST } from './shopdata.js';
 
-// Try to import the exam monster builder; if the file doesn't exist yet, gracefully degrade
-var buildExamMonster = null;
-var getMonsterParts = null;
-try {
-    var monsterModule = await import('./exammonster.js').catch(function() { return null; });
-    if (monsterModule) {
-        buildExamMonster = monsterModule.buildExamMonster;
-        getMonsterParts = monsterModule.getMonsterParts;
-    }
-} catch (e) {
-    // exammonster.js not yet available — monster features will be disabled
-}
+// FIX #1: Static import instead of dynamic import with top-level await.
+// The dynamic import with await was silently failing, leaving buildExamMonster as null.
+import { buildExamMonster, getMonsterParts } from './exammonster.js';
 
 var LANE_X = [-3, 0, 3];
 
@@ -91,30 +67,25 @@ function removeAndDispose(scene, obj) {
 
 /**
  * Build a simple heart mesh for heart pickups.
- * Uses two spheres + cone to approximate heart shape.
  */
 function buildHeartMesh() {
     var group = new THREE.Group();
     var heartMat = new THREE.MeshBasicMaterial({ color: 0xff2255 });
     var glowMat = new THREE.MeshBasicMaterial({ color: 0xff4477, transparent: true, opacity: 0.4 });
 
-    // Left lobe
     var leftLobe = new THREE.Mesh(new THREE.SphereGeometry(0.18, 8, 8), heartMat);
     leftLobe.position.set(-0.12, 0.1, 0);
     group.add(leftLobe);
 
-    // Right lobe
     var rightLobe = new THREE.Mesh(new THREE.SphereGeometry(0.18, 8, 8), heartMat);
     rightLobe.position.set(0.12, 0.1, 0);
     group.add(rightLobe);
 
-    // Bottom point
     var bottom = new THREE.Mesh(new THREE.ConeGeometry(0.22, 0.3, 8), heartMat);
     bottom.position.set(0, -0.12, 0);
     bottom.rotation.z = Math.PI;
     group.add(bottom);
 
-    // Outer glow
     var glow = new THREE.Mesh(new THREE.SphereGeometry(0.35, 10, 10), glowMat);
     glow.position.set(0, 0, 0);
     group.add(glow);
@@ -172,7 +143,6 @@ class Game {
         this.rushStacks = 0;
         this.maxRushStacks = 3;
         this.rushBonus = 0;
-        // NEW: Rush invulnerability
         this.rushInvulnerable = false;
         this.rushPropelTimer = 0;
 
@@ -206,30 +176,23 @@ class Game {
         this.cameraBasePos = new THREE.Vector3(0, 4.5, 10);
         this.baseFOV = 70;
 
-        // Animation timers
         this.celebrateTimer = 0;
         this.stumbleTimer = 0;
         this.landingTimer = 0;
         this.wasJumping = false;
 
-        // Player shadow
         this.playerShadow = null;
 
-        // Speed timer
         this.encounterStartTime = 0;
         this.lastEncounterTime = 0;
 
-        // Personal best detection
         this.isNewBest = false;
-
-        // Idempotency guard
         this.runEnded = false;
 
-        // Run-level quest tracking
         this.runCoinsCollected = 0;
         this.runPowerupsCollected = 0;
 
-        // NEW: Map transition system
+        // Map transition system
         this.encountersUntilTransition = 10;
         this.transitionActive = false;
         this.transitionTimer = 0;
@@ -238,18 +201,19 @@ class Game {
         this.transitionNewSkin = null;
         this.transitionProgress = 0;
 
-        // NEW: Exam Monster system
+        // Exam Monster system
         this.examMonster = null;
         this.monsterParts = null;
-        this.monsterZ = 25; // starts behind camera (positive Z = behind player)
-        this.monsterTargetZ = 25;
+        // FIX #7: Monster starts closer for earlier visibility
+        this.monsterZ = 20;
+        this.monsterTargetZ = 20;
         this.monsterVisible = false;
         this.monsterWarningPlayed = false;
 
-        // NEW: Heart pickup tracking
+        // FIX #5: Lower heart spawn threshold
         this.heartSpawnCounter = 0;
 
-        // NEW: Faceplant state
+        // Faceplant state
         this.faceplanting = false;
         this.faceplantTimer = 0;
 
@@ -264,7 +228,6 @@ class Game {
         this.onAchievementUnlocked = null;
         this.onContinuePrompt = null;
         this.onSkinSelected = null;
-        // NEW callbacks
         this.onMapTransition = null;
         this.onPlayerFaceplant = null;
     }
@@ -297,7 +260,6 @@ class Game {
             var dt = self.clock.getDelta();
             var clamped = dt > 0.1 ? 0.016 : dt;
             if (self.running && !self.paused) self.update(clamped);
-            // Only render game scene when running
             if (self.running) {
                 self.renderer.render(self.scene, self.camera);
             }
@@ -338,24 +300,18 @@ class Game {
         this.scene.add(this.playerShadow);
     }
 
-    /**
-     * NEW: Create the exam monster mesh and add to scene.
-     */
     createExamMonster() {
-        if (!buildExamMonster) return; // Module not loaded
+        // FIX #1: buildExamMonster is now statically imported, always available
         if (this.examMonster) {
             this.scene.remove(this.examMonster);
         }
         this.examMonster = buildExamMonster();
-        this.monsterParts = getMonsterParts ? getMonsterParts(this.examMonster) : null;
+        this.monsterParts = getMonsterParts(this.examMonster);
         this.examMonster.position.set(0, 1.5, this.monsterZ);
         this.examMonster.visible = false;
         this.scene.add(this.examMonster);
     }
 
-    /**
-     * NEW: Smooth map transition to a new skin over ~3 seconds.
-     */
     transitionSkin(newSkin) {
         this.transitionActive = true;
         this.transitionTimer = 0;
@@ -363,27 +319,22 @@ class Game {
         this.transitionNewSkin = newSkin;
         this.transitionProgress = 0;
 
-        // Signal audio crossfade
+        // FIX #4: Only signal the callback — do NOT also call audio.crossfadeMusic() here.
+        // The callback in main.js already calls audio.crossfadeMusic().
         if (this.onMapTransition) {
             this.onMapTransition(newSkin.name);
+        } else {
+            // Fallback: if no callback is wired, do it directly
+            try {
+                audio.crossfadeMusic && audio.crossfadeMusic(newSkin.name, this.transitionDuration);
+            } catch (e) {}
         }
 
-        // Signal audio module for music crossfade
-        try {
-            audio.crossfadeMusic && audio.crossfadeMusic(newSkin.name, this.transitionDuration);
-        } catch (e) {
-            // crossfadeMusic may not exist yet
-        }
-
-        // Play transition sound
         try {
             audio.play('mapTransition');
         } catch (e) {}
     }
 
-    /**
-     * NEW: Update the map transition progress each frame.
-     */
     updateMapTransition(dt) {
         if (!this.transitionActive) return;
 
@@ -393,80 +344,101 @@ class Game {
         var oldColors = this.transitionOldSkin.colors;
         var newColors = this.transitionNewSkin.colors;
 
-        // Crossfade background color
         var oldBg = new THREE.Color(oldColors.bg);
         var newBg = new THREE.Color(newColors.bg);
         var blendedBg = oldBg.clone().lerp(newBg, this.transitionProgress);
         this.scene.background = blendedBg;
 
-        // Crossfade fog if present
         if (this.scene.fog) {
             this.scene.fog.color.copy(blendedBg);
         }
 
-        // When transition is complete, rebuild the track with the new skin
         if (this.transitionProgress >= 1.0) {
             this.transitionActive = false;
             this.currentSkin = this.transitionNewSkin;
             this.transitionOldSkin = null;
             this.transitionNewSkin = null;
 
-            // Rebuild track with new skin
             this.cleanupTrack();
             this.trackRefs = buildTrack(this.scene, this.currentSkin);
 
-            // Re-add player and shadow (they were removed during track cleanup traversal protection)
             if (this.playerGroup && !this.scene.children.includes(this.playerGroup)) {
                 this.scene.add(this.playerGroup);
             }
             if (this.playerShadow && !this.scene.children.includes(this.playerShadow)) {
                 this.scene.add(this.playerShadow);
             }
-
-            // Re-add monster if it exists
             if (this.examMonster) {
                 if (!this.scene.children.includes(this.examMonster)) {
                     this.scene.add(this.examMonster);
                 }
             }
 
-            // Notify UI of new skin
-            if (this.onSkinSelected) this.onSkinSelected(this.currentSkin.name);
+            // FIX #2: Re-add PowerUpFX and TrailSystem after track rebuild
+            if (this.powerupFX) {
+                this._readdPowerupFX();
+            }
+            if (this.trailSystem) {
+                this._readdTrailSystem();
+            }
 
-            // Start new ambient
+            if (this.onSkinSelected) this.onSkinSelected(this.currentSkin.name);
             audio.startAmbient(this.currentSkin.name);
         }
     }
 
-    /**
-     * NEW: Update exam monster position and behavior.
-     */
+    // FIX #2: Helper to re-add power-up FX groups to scene after cleanup
+    _readdPowerupFX() {
+        if (!this.powerupFX || !this.powerupFX.effects) return;
+        for (var key in this.powerupFX.effects) {
+            var effect = this.powerupFX.effects[key];
+            if (effect && effect.group && !this.scene.children.includes(effect.group)) {
+                this.scene.add(effect.group);
+            }
+        }
+        // Re-add rush ghosts
+        if (this.powerupFX.rushGhosts) {
+            for (var i = 0; i < this.powerupFX.rushGhosts.length; i++) {
+                var ghost = this.powerupFX.rushGhosts[i];
+                if (ghost.mesh && !this.scene.children.includes(ghost.mesh)) {
+                    this.scene.add(ghost.mesh);
+                }
+            }
+        }
+    }
+
+    // FIX #2: Helper to re-add trail system particles to scene after cleanup
+    _readdTrailSystem() {
+        if (!this.trailSystem || !this.trailSystem.pool) return;
+        for (var i = 0; i < this.trailSystem.pool.length; i++) {
+            var p = this.trailSystem.pool[i];
+            if (p.mesh && !this.scene.children.includes(p.mesh)) {
+                this.scene.add(p.mesh);
+            }
+        }
+    }
+
     updateExamMonster(dt) {
         if (!this.examMonster) return;
 
-        // Lerp monster toward target
-        this.monsterZ += (this.monsterTargetZ - this.monsterZ) * dt * 0.8;
+        // Lerp monster toward target — FIX #8: faster lerp (1.2 instead of 0.8)
+        this.monsterZ += (this.monsterTargetZ - this.monsterZ) * dt * 1.2;
 
-        // Clamp minimum
         if (this.monsterZ < 3) this.monsterZ = 3;
 
-        // Update visibility
-        var shouldBeVisible = this.monsterZ < 15;
+        var shouldBeVisible = this.monsterZ < 18; // FIX #7: wider visibility range
         if (shouldBeVisible !== this.monsterVisible) {
             this.monsterVisible = shouldBeVisible;
             this.examMonster.visible = shouldBeVisible;
         }
 
-        // Update position
         this.examMonster.position.set(0, 1.5, this.monsterZ);
 
-        // Scale based on distance (closer = larger appearance)
         if (this.monsterVisible) {
-            var distFactor = Math.max(0.3, 1.0 - (this.monsterZ - 3) / 12);
+            var distFactor = Math.max(0.3, 1.0 - (this.monsterZ - 3) / 15);
             this.examMonster.scale.set(distFactor, distFactor, distFactor);
         }
 
-        // Warning sound when getting close
         if (this.monsterZ < 8 && !this.monsterWarningPlayed) {
             this.monsterWarningPlayed = true;
             try { audio.play('monsterClose'); } catch (e) {}
@@ -478,12 +450,10 @@ class Game {
         // Animate monster parts
         if (this.monsterParts && this.monsterVisible) {
             var t = this.elapsedTime;
-            // Body pulse
             if (this.monsterParts.body) {
                 var pulse = 1.0 + Math.sin(t * 2) * 0.05;
                 this.monsterParts.body.scale.set(pulse, pulse, pulse);
             }
-            // Eyes glow
             if (this.monsterParts.eyes) {
                 for (var ei = 0; ei < this.monsterParts.eyes.length; ei++) {
                     var eye = this.monsterParts.eyes[ei];
@@ -492,14 +462,12 @@ class Game {
                     }
                 }
             }
-            // Tentacles wave
             if (this.monsterParts.tentacles) {
                 for (var ti = 0; ti < this.monsterParts.tentacles.length; ti++) {
                     var tent = this.monsterParts.tentacles[ti];
                     tent.rotation.z = Math.sin(t * 1.5 + ti * 0.8) * 0.2;
                 }
             }
-            // Question marks orbit
             if (this.monsterParts.questionMarks) {
                 for (var qi = 0; qi < this.monsterParts.questionMarks.length; qi++) {
                     var qm = this.monsterParts.questionMarks[qi];
@@ -512,9 +480,6 @@ class Game {
         }
     }
 
-    /**
-     * NEW: Spawn a heart pickup on the track.
-     */
     spawnHeartPickup() {
         var lane = Math.floor(Math.random() * 3);
         var heartGroup = buildHeartMesh();
@@ -550,9 +515,9 @@ class Game {
             this.rushStacks++;
             this.rushing = true;
 
-            // NEW: Rush invulnerability for 0.5s + propel through gate
             this.rushInvulnerable = true;
-            this.rushPropelTimer = 0.5;
+            // FIX #6: Extended rush propulsion from 0.5s to 1.0s
+            this.rushPropelTimer = 1.0;
 
             var distanceBonus = Math.max(0, (-this.gateZ - 10)) / 50;
             this.rushBonus = Math.floor(distanceBonus * 40 * this.rushStacks);
@@ -585,14 +550,51 @@ class Game {
         this.speedLines = [];
     }
 
+    // FIX #2: cleanupTrack now protects PowerUpFX groups and TrailSystem particles
     cleanupTrack() {
         var toRemove = [];
         var self = this;
+
+        // Build a set of objects to protect
+        var protectedSet = new Set();
+        protectedSet.add(self.camera);
+        protectedSet.add(self.playerShadow);
+        protectedSet.add(self.playerGroup);
+        if (self.examMonster) protectedSet.add(self.examMonster);
+
+        // Protect PowerUpFX effect groups
+        if (self.powerupFX && self.powerupFX.effects) {
+            for (var key in self.powerupFX.effects) {
+                var effect = self.powerupFX.effects[key];
+                if (effect && effect.group) protectedSet.add(effect.group);
+            }
+            // Protect rush ghost meshes
+            if (self.powerupFX.rushGhosts) {
+                for (var gi = 0; gi < self.powerupFX.rushGhosts.length; gi++) {
+                    if (self.powerupFX.rushGhosts[gi].mesh) {
+                        protectedSet.add(self.powerupFX.rushGhosts[gi].mesh);
+                    }
+                }
+            }
+        }
+
+        // Protect TrailSystem particle meshes
+        if (self.trailSystem && self.trailSystem.pool) {
+            for (var ti = 0; ti < self.trailSystem.pool.length; ti++) {
+                if (self.trailSystem.pool[ti].mesh) {
+                    protectedSet.add(self.trailSystem.pool[ti].mesh);
+                }
+            }
+        }
+
         this.scene.traverse(function (child) {
-            if (child === self.camera) return;
-            if (child === self.playerShadow) return;
-            if (child === self.playerGroup) return;
-            if (child === self.examMonster) return;
+            if (protectedSet.has(child)) return;
+            // Also skip children OF protected objects (traverse goes deep)
+            var parent = child.parent;
+            while (parent) {
+                if (protectedSet.has(parent)) return;
+                parent = parent.parent;
+            }
             if (child.isMesh || child.isGroup || child.isLine) toRemove.push(child);
             if (child.isLight && child.userData.skinLight) toRemove.push(child);
         });
@@ -604,7 +606,6 @@ class Game {
 
     collectPowerup(type) {
         switch (type) {
-            // NEW: Autopilot nerfed from 3 to 1
             case 'shield': this.powerups.shield = 999; break;
             case 'magnet': this.powerups.magnet = 10; break;
             case 'double': this.powerups.double = 15; break;
@@ -613,7 +614,6 @@ class Game {
         }
         audio.play('powerup');
         this.runPowerupsCollected++;
-        // Quest: q_3powerups
         if (this.runPowerupsCollected <= 3) {
             storage.incrementQuest('q_3powerups');
         }
@@ -667,7 +667,6 @@ class Game {
         this.powerups = { shield: 0, double: 0, magnet: 0, autoPilot: 0, scoreFrenzy: 0 };
         this.autoPilotGatesLeft = 0;
 
-        // Reset animation timers
         this.celebrateTimer = 0;
         this.stumbleTimer = 0;
         this.landingTimer = 0;
@@ -679,21 +678,18 @@ class Game {
         this.runCoinsCollected = 0;
         this.runPowerupsCollected = 0;
 
-        // NEW: Reset map transition state
         this.encountersUntilTransition = 10;
         this.transitionActive = false;
         this.transitionTimer = 0;
 
-        // NEW: Reset exam monster state
-        this.monsterZ = 25;
-        this.monsterTargetZ = 25;
+        // FIX #7: Monster starts closer
+        this.monsterZ = 20;
+        this.monsterTargetZ = 20;
         this.monsterVisible = false;
         this.monsterWarningPlayed = false;
 
-        // NEW: Reset heart tracking
         this.heartSpawnCounter = 0;
 
-        // NEW: Reset faceplant
         this.faceplanting = false;
         this.faceplantTimer = 0;
 
@@ -714,7 +710,11 @@ class Game {
         this.rebuildPlayer();
         this.createPlayerShadow();
 
-        // NEW: Create exam monster
+        // FIX #2: Re-add PowerUpFX and TrailSystem after track rebuild
+        this._readdPowerupFX();
+        this._readdTrailSystem();
+
+        // Create exam monster
         this.createExamMonster();
 
         if (this.onSkinSelected) this.onSkinSelected(this.currentSkin.name);
@@ -724,8 +724,6 @@ class Game {
         this.running = true;
         this.paused = false;
         this.clock.getDelta();
-        // NOTE: Countdown interval should be 1000ms not 500ms for actual seconds.
-        // The actual fix is in ui.js countdown() method.
         audio.startAmbient(this.currentSkin.name);
         this.spawnEncounter();
     }
@@ -745,7 +743,6 @@ class Game {
         }
         validateCardNoLeak(card, this.gates);
 
-        // Show revenge card banner if this card was previously missed
         var cardStat = storage.getCardStat(card.id);
         if (cardStat.wrong > 0) {
             var revengeBanner = document.getElementById('revengeCardBanner');
@@ -755,7 +752,6 @@ class Game {
             }
         }
 
-        // Auto-pilot: move to correct lane (initial set only, do NOT decrement here)
         if (this.autoPilotGatesLeft > 0) {
             for (var ap = 0; ap < this.gates.length; ap++) {
                 if (this.gates[ap].correct) { this.targetLane = ap; break; }
@@ -773,7 +769,6 @@ class Game {
         this.rushPropelTimer = 0;
         document.getElementById('rushEl').classList.remove('show');
 
-        // Speed timer
         this.encounterStartTime = performance.now();
 
         if (this.onEncounterStart) this.onEncounterStart(card, this.gates);
@@ -788,7 +783,6 @@ class Game {
         this.rushInvulnerable = false;
         this.rushPropelTimer = 0;
 
-        // Speed timer
         this.lastEncounterTime = performance.now() - this.encounterStartTime;
 
         var gate = this.gates[this.currentLane];
@@ -799,15 +793,13 @@ class Game {
         this.encountersDone++;
         this.runCards.push({ card: card, ok: ok, choice: gate.label });
 
-        // Quest: q_25enc
         storage.incrementQuest('q_25enc');
 
-        // NEW: Map transition every 10 encounters
+        // Map transition every 10 encounters
         this.encountersUntilTransition--;
         if (this.encountersUntilTransition <= 0) {
             this.encountersUntilTransition = 10;
             var newSkin = getRandomSkin();
-            // Ensure we get a different skin
             var attempts = 0;
             while (newSkin.name === this.currentSkin.name && attempts < 20) {
                 newSkin = getRandomSkin();
@@ -818,14 +810,13 @@ class Game {
             }
         }
 
-        // NEW: Update exam monster based on answer correctness
+        // FIX #8: Monster moves faster on wrong answers
         if (this.examMonster) {
             if (!ok) {
-                this.monsterTargetZ -= 3; // Monster gets closer on wrong answer
+                this.monsterTargetZ -= 4; // Was -3, now -4 for faster approach
             } else {
-                this.monsterTargetZ += 1; // Monster falls back slightly on correct
+                this.monsterTargetZ += 1.5; // Was +1, now +1.5 for more responsive retreat
             }
-            // Clamp so monster doesn't go too far back
             this.monsterTargetZ = Math.min(this.monsterTargetZ, 30);
             this.monsterTargetZ = Math.max(this.monsterTargetZ, 3);
         }
@@ -837,7 +828,6 @@ class Game {
             this.streak++;
             if (this.streak > this.bestStreak) this.bestStreak = this.streak;
 
-            // Quest: q_streak8
             if (this.streak === 8) {
                 storage.incrementQuest('q_streak8');
             }
@@ -860,7 +850,6 @@ class Game {
             }
             audio.play('coin');
 
-            // Celebration animation
             this.celebrateTimer = 0.3;
             this.playerY += 0.5;
             this.jumpVel = 3;
@@ -868,7 +857,6 @@ class Game {
                 this.jumping = true;
             }
 
-            // Gate transformation — correct gate
             for (var gi = 0; gi < this.gateMeshes.length; gi++) {
                 if (this.gates[gi].correct) {
                     this.gateMeshes[gi].children[0].material.color.setHex(0x00ff44);
@@ -890,15 +878,10 @@ class Game {
             this.multiplier = Math.max(1, this.multiplier - 1);
             this.lives--;
 
-            // Reset audio streak counter
             audio.correctCounter = 0;
-
-            // Stumble animation
             this.stumbleTimer = 0.3;
-
             audio.play('wrong');
 
-            // Gate transformation — wrong
             for (var gwi = 0; gwi < this.gateMeshes.length; gwi++) {
                 if (this.gates[gwi].correct) {
                     this.gateMeshes[gwi].children[0].material.color.setHex(0x00cc55);
@@ -914,7 +897,6 @@ class Game {
             flashGateResult(this.gateMeshes, this.gates, this.currentLane);
             this.triggerShake();
 
-            // Shield absorbs hit
             if (this.lives < 0 && this.powerups.shield > 0) {
                 this.lives = 0;
             }
@@ -928,9 +910,13 @@ class Game {
                     this.feedbackTimer = 1.5;
                     if (this.onEncounterResolve) this.onEncounterResolve(card, ok);
 
-                    // NEW: Monster consume animation when lives reach 0
+                    // FIX #3: Trigger faceplant on death even without monster being close
+                    // Monster consume if monster is close enough
                     if (this.examMonster && this.monsterZ < 20) {
                         this._triggerMonsterConsume();
+                    } else {
+                        // FIX #3: Trigger standalone faceplant even without monster
+                        this._triggerFaceplant();
                     }
 
                     var canContinue = !this.continued && storage.get('coins') >= CONTINUE_COST;
@@ -939,8 +925,7 @@ class Game {
                         this.onContinuePrompt(CONTINUE_COST);
                     } else {
                         var self = this;
-                        // Delay end run to allow monster consume / faceplant
-                        var endDelay = (this.examMonster && this.monsterZ < 20) ? 2500 : 500;
+                        var endDelay = this.faceplanting ? 2000 : 500;
                         setTimeout(function () { self.endRun(); }, endDelay);
                     }
                     return;
@@ -948,7 +933,7 @@ class Game {
             }
         }
 
-        // Auto-pilot: decrement AFTER resolving (not in spawnEncounter)
+        // Auto-pilot: decrement AFTER resolving
         if (this.autoPilotGatesLeft > 0) {
             this.autoPilotGatesLeft--;
             if (this.autoPilotGatesLeft <= 0) {
@@ -975,7 +960,6 @@ class Game {
 
         if (this.onEncounterResolve) this.onEncounterResolve(card, ok);
 
-        // Daily mode cap: prevent 16th encounter
         if (this.mode === 'daily' && this.encountersDone >= 15) {
             this.waitingForNext = false;
             var self2 = this;
@@ -983,44 +967,46 @@ class Game {
             return;
         }
 
-        // NEW: Heart spawn logic — when player has exactly 1 life and not study mode
+        // FIX #5: Heart spawn logic — lowered threshold from 3 to 1 encounter
         if (this.lives === 1 && this.mode !== 'study') {
             this.heartSpawnCounter++;
-            if (this.heartSpawnCounter >= 3) {
+            if (this.heartSpawnCounter >= 1) { // Was >= 3
                 this.heartSpawnCounter = 0;
-                if (Math.random() < 0.7) { // ~70% chance every 3 encounters
+                if (Math.random() < 0.8) { // Was 0.7, now 80% chance
                     this.spawnHeartPickup();
                 }
             }
         }
     }
 
-    /**
-     * NEW: Trigger monster consume animation.
-     */
     _triggerMonsterConsume() {
         if (!this.examMonster) return;
 
-        // Rush monster to Z=0 over 1 second
         this.monsterTargetZ = 0;
-        this.monsterZ = Math.min(this.monsterZ, 10); // Jump closer
-
-        // Make visible if not already
+        this.monsterZ = Math.min(this.monsterZ, 10);
         this.examMonster.visible = true;
 
-        // Play consume sound
         try { audio.play('monsterConsume'); } catch (e) {}
 
-        // Trigger faceplant
         this.faceplanting = true;
         this.faceplantTimer = 1.5;
 
-        // Signal player faceplant callback
         if (this.onPlayerFaceplant) {
             this.onPlayerFaceplant();
         }
 
-        // Play faceplant sound
+        try { audio.play('faceplant'); } catch (e) {}
+    }
+
+    // FIX #3: Standalone faceplant that works without the exam monster
+    _triggerFaceplant() {
+        this.faceplanting = true;
+        this.faceplantTimer = 1.2;
+
+        if (this.onPlayerFaceplant) {
+            this.onPlayerFaceplant();
+        }
+
         try { audio.play('faceplant'); } catch (e) {}
     }
 
@@ -1077,7 +1063,6 @@ class Game {
         var currentSpeed = this.speed;
         var rushMult = 1.0 + this.rushStacks;
 
-        // NEW: During rush propulsion, move at 3x speed toward gate
         if (this.rushPropelTimer > 0) {
             this.rushPropelTimer -= dt;
             rushMult = 3.0;
@@ -1088,16 +1073,14 @@ class Game {
 
         var move = currentSpeed * rushMult * dt;
 
-        // NEW: Faceplant animation
+        // Faceplant animation
         if (this.faceplanting) {
             this.faceplantTimer -= dt;
-            var fp = 1.5 - this.faceplantTimer; // time elapsed in animation
+            var fp = (this.faceplantTimer > 0 ? (1.5 - this.faceplantTimer) : 1.5);
 
             if (fp < 0.3) {
-                // Lean forward rapidly
                 this.playerGroup.rotation.x = (fp / 0.3) * 0.8;
             } else if (fp < 0.6) {
-                // Arms forward, knees bend
                 this.playerGroup.rotation.x = 0.8 + ((fp - 0.3) / 0.3) * 0.5;
                 if (this.limbs && this.limbs.leftArm) {
                     this.limbs.leftArm.rotation.x = -1.2 * ((fp - 0.3) / 0.3);
@@ -1106,28 +1089,25 @@ class Game {
                     this.limbs.rightArm.rotation.x = -1.2 * ((fp - 0.3) / 0.3);
                 }
             } else if (fp < 1.0) {
-                // Hit ground
                 this.playerGroup.rotation.x = Math.PI / 2;
                 this.playerGroup.position.y = Math.max(0, this.playerGroup.position.y - dt * 5);
             }
-            // else stay down
 
             if (this.faceplantTimer <= 0) {
                 this.faceplanting = false;
             }
 
-            // Still update HUD during faceplant
             if (this.onHudUpdate) this.onHudUpdate();
-            return; // Skip normal update during faceplant
+            return;
         }
 
-        // NEW: Update map transition
+        // Update map transition
         this.updateMapTransition(dt);
 
-        // NEW: Update exam monster
+        // Update exam monster
         this.updateExamMonster(dt);
 
-        // AUTO-PILOT: Continuously force correct lane every frame
+        // AUTO-PILOT: Continuously force correct lane
         if (this.autoPilotGatesLeft > 0 && this.gatesActive) {
             for (var ap = 0; ap < this.gates.length; ap++) {
                 if (this.gates[ap].correct) { this.targetLane = ap; break; }
@@ -1399,7 +1379,6 @@ class Game {
                 if (od.lane === this.currentLane) {
                     var dodged = (od.type === 'high' && this.sliding) || (od.type === 'low' && this.jumping);
 
-                    // NEW: Rush invulnerability skips obstacle damage
                     if (!dodged && !this.rushInvulnerable) {
                         if (this.powerups.shield > 0) {
                             this.powerups.shield = 0;
@@ -1437,7 +1416,6 @@ class Game {
                 c.rotation.y += dt * 2;
                 c.position.y = 1.5 + Math.sin(this.elapsedTime * 3 + ci) * 0.3;
             } else if (c.userData.type === 'heart') {
-                // NEW: Heart pickup animation — pulse and glow
                 c.rotation.y += dt * 2;
                 var heartPulse = 1.0 + Math.sin(this.elapsedTime * 4) * 0.15;
                 c.scale.set(heartPulse, heartPulse, heartPulse);
@@ -1466,7 +1444,6 @@ class Game {
                     if (c.userData.type === 'powerup') {
                         this.collectPowerup(c.userData.powerupType);
                     } else if (c.userData.type === 'heart') {
-                        // NEW: Heart pickup — restore a life
                         var maxLives = this.mode === 'study' ? 99 : 3;
                         if (this.lives < maxLives) {
                             this.lives++;
@@ -1522,7 +1499,6 @@ class Game {
     }
 
     endRun() {
-        // Idempotency guard
         if (this.runEnded) return;
         this.runEnded = true;
 
@@ -1531,12 +1507,10 @@ class Game {
         document.getElementById('pauseOverlay').classList.remove('active');
         document.getElementById('rushEl').classList.remove('show');
 
-        // Reset camera
         this.camera.position.copy(this.cameraBasePos);
         this.camera.fov = this.baseFOV;
         this.camera.updateProjectionMatrix();
 
-        // Reset player
         if (this.playerGroup) {
             this.playerGroup.rotation.z = 0;
             this.playerGroup.rotation.x = 0;
@@ -1552,10 +1526,8 @@ class Game {
             this.monsterParts = null;
         }
 
-        // Detect personal best BEFORE saving
         this.isNewBest = this.score > storage.get('bestScore');
 
-        // Save
         storage.addCoins(this.coins);
         if (this.isNewBest) storage.set('bestScore', this.score);
         if (this.bestStreak > storage.get('bestStreak')) storage.set('bestStreak', this.bestStreak);
@@ -1581,13 +1553,11 @@ class Game {
 
         storage.incrementQuest('q_25enc', this.encountersDone);
 
-        // Track play time and cards studied (for storage.js workstream 7)
         try {
             storage.addPlayTime && storage.addPlayTime(Math.round(this.elapsedTime));
             storage.addCardsStudied && storage.addCardsStudied(this.encountersDone);
         } catch (e) {}
 
-        // Golden Doctor unlock with proper notification
         var newAchievements = [];
 
         if (this.wrong === 0 && this.correct >= 20) {
