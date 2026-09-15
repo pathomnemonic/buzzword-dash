@@ -141,7 +141,7 @@
 <!-- ====================================================================
      SCREENS — All transparent, floating over the 3D canvas.
      Bottom nav is OUTSIDE all screens so it persists everywhere.
-     ==================================================================== -->
+==================================================================== -->
 
 <!-- ==================== HOME ==================== -->
 <div class="screen active" id="screenHome">
@@ -193,8 +193,13 @@
           <button class="btn btn-outline btn-sm" id="deselectAllSubjects">Deselect All</button>
         </div>
         <div class="subject-scroll" id="subjectScroll"></div>
+        <!-- NEW: Subject note for empty selection -->
+        <div id="subjectNote" style="display:none;font-size:10px;color:var(--text-muted);text-align:center;margin-top:4px"></div>
       </div>
     </div>
+
+    <!-- NEW: Exam Filter -->
+    <div id="examFilterContainer"></div>
 
     <!-- ===== SPEED DIAL ===== -->
     <div class="speed-dial">
@@ -222,6 +227,16 @@
       <button class="btn btn-outline btn-sm" id="achievementsBtn" style="flex:1">🏆 Badges</button>
       <button class="btn btn-outline btn-sm" id="settingsBtn" style="flex:1">⚙ Settings</button>
     </div>
+
+    <!-- NEW: Extra buttons row for flashcards, card browser, profile -->
+    <div style="display:flex;gap:6px;margin-top:6px">
+      <button class="btn btn-outline btn-sm" id="flashcardBtn" style="flex:1">📖 Flashcards</button>
+      <button class="btn btn-outline btn-sm" id="cardBrowserBtn" style="flex:1">📚 Browse Cards</button>
+      <button class="btn btn-outline btn-sm" id="profileBtn" style="flex:1">👤 Profile</button>
+    </div>
+
+    <!-- NEW: How to Play Section -->
+    <div id="howToPlaySection" style="margin-top:14px"></div>
 
   </div>
 </div>
@@ -334,14 +349,40 @@
   </div>
 </div>
 
+<!-- ==================== NEW: PROFILE ==================== -->
+<div class="screen" id="screenProfile">
+  <div class="screen-scroll">
+    <h2 style="margin-bottom:14px">👤 Profile</h2>
+    <div id="profileContent"></div>
+  </div>
+</div>
+
+<!-- ==================== NEW: CARD BROWSER ==================== -->
+<div class="screen" id="screenCardBrowser">
+  <div class="screen-scroll">
+    <h2 style="margin-bottom:4px">📚 Card Browser</h2>
+    <p class="muted">Browse, search, and manage all cards.</p>
+    <div id="cardBrowserContent"></div>
+  </div>
+</div>
+
+<!-- ==================== NEW: FLASHCARD MODE ==================== -->
+<div class="screen" id="screenFlashcard">
+  <div class="screen-scroll">
+    <h2 style="margin-bottom:14px">📖 Flashcard Study</h2>
+    <div id="flashcardContent"></div>
+  </div>
+</div>
+
 <!-- ====================================================================
      PERSISTENT BOTTOM NAV — Outside all screens, always visible
      except during gameplay (hidden by JS when game.running)
-     ==================================================================== -->
+==================================================================== -->
 <div class="bottom-nav" id="bottomNav">
   <div class="nav-item active" data-screen="screenHome"><span class="nav-icon">🏠</span>Home</div>
   <div class="nav-item" data-screen="screenStats"><span class="nav-icon">📊</span>Stats</div>
   <div class="nav-item" data-screen="screenShop"><span class="nav-icon">🧥</span>Locker</div>
+  <div class="nav-item" data-screen="screenProfile"><span class="nav-icon">👤</span>Profile</div>
   <div class="nav-item" data-screen="screenSettings"><span class="nav-icon">⚙</span>Settings</div>
 </div>
 
