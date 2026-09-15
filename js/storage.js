@@ -31,6 +31,12 @@
  * - musicVolume: independent music volume control
  * - New methods: card management, profile, play time, quest completion
  * - Migration logic for existing saves
+ *
+ * NEW in Multi-Agent Expansion:
+ * - friendsList: array of friend player IDs for leaderboard system
+ * - leaderboardPlayerId: unique persistent player ID
+ * - Friends helper methods: getFriendsList, addFriend, removeFriend
+ * - getLeaderboardPlayerId: auto-generates unique ID on first call
  */
 
 var STORAGE_KEY = 'buzzword_dash_v1';
@@ -130,7 +136,11 @@ var DEFAULTS = {
 
     // Performance stats
     fastestCorrectAnswer: 99999,    // milliseconds
-    longestSession: 0               // seconds
+    longestSession: 0,              // seconds
+
+    // Friends / Leaderboard
+    friendsList: [],                    // Array of friend player IDs
+    leaderboardPlayerId: ''             // Unique player ID for leaderboard
 };
 
 function deepClone(obj) {
@@ -235,6 +245,10 @@ class Storage {
                 if (this.data.ownedItems.indexOf('cloth_none') < 0) {
                     this.data.ownedItems.push('cloth_none');
                 }
+
+                // Friends / leaderboard
+                if (!Array.isArray(this.data.friendsList)) this.data.friendsList = [];
+                if (this.data.leaderboardPlayerId === undefined) this.data.leaderboardPlayerId = '';
 
             } else {
                 this.data = deepClone(DEFAULTS);
@@ -701,6 +715,45 @@ class Storage {
 
     setAnkiApiKey(key) {
         this.set('ankiApiKey', String(key || ''));
+    }
+
+    // --- Friends ---
+
+    getFriendsList() {
+        return this.get('friendsList') || [];
+    }
+
+    addFriend(playerId) {
+        var friends = this.get('friendsList') || [];
+        if (friends.indexOf(playerId) < 0) {
+            friends.push(playerId);
+            this.set('friendsList', friends);
+        }
+    }
+
+    removeFriend(playerId) {
+        var friends = this.get('friendsList') || [];
+        var idx = friends.indexOf(playerId);
+        if (idx >= 0) {
+            friends.splice(idx, 1);
+            this.set('friendsList', friends);
+        }
+    }
+
+    // --- Leaderboard Player ID ---
+
+    getLeaderboardPlayerId() {
+        var id = this.get('leaderboardPlayerId');
+        if (!id) {
+            // Generate unique player ID
+            if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+                id = crypto.randomUUID();
+            } else {
+                id = 'player_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+            }
+            this.set('leaderboardPlayerId', id);
+        }
+        return id;
     }
 
     // --- Full reset ---
