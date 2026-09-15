@@ -7,6 +7,7 @@
  * - Empty subjects array = use all subjects
  * - Exam filter support via storage.get('selectedExams')
  * - Disabled cards support via storage.isCardDisabled()
+ * - FIX: Removed illegal top-level await that broke module loading chain
  */
 
 import * as THREE from 'three';
@@ -14,16 +15,15 @@ import { CARDS, SUBJECTS } from '../cards.js';
 import { storage } from '../storage.js';
 import { customCards } from '../customcards.js';
 
-// Try to import EXAM_FILTERS; gracefully handle if not yet available
-var EXAM_FILTERS = null;
-try {
-    var cardsModule = await import('../cards.js').catch(function() { return null; });
-    if (cardsModule && cardsModule.EXAM_FILTERS) {
-        EXAM_FILTERS = cardsModule.EXAM_FILTERS;
-    }
-} catch (e) {
-    // EXAM_FILTERS not available yet
-}
+// EXAM_FILTERS: defined locally as fallback since cards.js may not export it yet.
+// When cards.js is updated to export EXAM_FILTERS, this can be replaced with a
+// static import: import { CARDS, SUBJECTS, EXAM_FILTERS } from '../cards.js';
+var EXAM_FILTERS = [
+    "step1", "step2", "step3",
+    "comlex1", "comlex2",
+    "shelf_im", "shelf_surg", "shelf_peds", "shelf_obgyn",
+    "shelf_psych", "shelf_neuro", "shelf_fm"
+];
 
 var LANE_X = [-3, 0, 3];
 
