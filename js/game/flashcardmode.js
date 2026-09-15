@@ -10,7 +10,14 @@
  * - Review missed cards immediately after session
  */
 
-import { CARDS, SUBJECTS, EXAM_FILTERS } from '../cards.js';
+import { CARDS, SUBJECTS } from '../cards.js';
+
+var EXAM_FILTERS = [
+    "step1", "step2", "step3",
+    "comlex1", "comlex2",
+    "shelf_im", "shelf_surg", "shelf_peds", "shelf_obgyn",
+    "shelf_psych", "shelf_neuro", "shelf_fm"
+];
 import { storage } from '../storage.js';
 import { customCards } from '../customcards.js';
 
