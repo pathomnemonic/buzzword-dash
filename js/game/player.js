@@ -15,6 +15,10 @@
  * - Enhanced celebration animation
  *
  * Equipment (hat, gear, clothing) applies on top of the avatar base.
+ *
+ * FIX: Vehicle facing direction — all vehicle builders now apply
+ * pg.rotation.y = Math.PI / 2 so eyes face negative Z (forward
+ * in gameplay) instead of negative X (sideways).
  */
 
 import * as THREE from 'three';
@@ -205,6 +209,9 @@ function buildAmbulanceVehicle(avatar) {
     pg.userData.isVehicle = true;
     pg.userData.vehicleType = 'ambulance';
 
+    // Rotate so eyes face negative Z (forward in gameplay)
+    pg.rotation.y = Math.PI / 2;
+
     return pg;
 }
 
@@ -306,6 +313,9 @@ function buildRaceCarVehicle(avatar) {
     pg.userData.isVehicle = true;
     pg.userData.vehicleType = 'racecar';
 
+    // Rotate so eyes face negative Z (forward in gameplay)
+    pg.rotation.y = Math.PI / 2;
+
     return pg;
 }
 
@@ -398,6 +408,9 @@ function buildHearseVehicle(avatar) {
     pg.userData.wheels = wheels;
     pg.userData.isVehicle = true;
     pg.userData.vehicleType = 'hearse';
+
+    // Rotate so eyes face negative Z (forward in gameplay)
+    pg.rotation.y = Math.PI / 2;
 
     return pg;
 }
