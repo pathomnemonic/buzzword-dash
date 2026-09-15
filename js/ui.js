@@ -7,6 +7,10 @@
  * FIXES & NEW FEATURES:
  * - Calendar uses hasOwnProperty for 0% accuracy display
  * - Calendar uses local date keys (not UTC)
+ * - Calendar day-of-week alignment fix with placeholder divs
+ * - Quest streak indicator below calendar
+ * - All-quests-complete date tracking
+ * - Anki import container mount point in settings
  * - Confetti triggered on personal best
  * - Speed timer shows live ms during encounter
  * - Speed timer hidden when disabled
@@ -566,12 +570,26 @@ class UI {
 
     onEquipChange = null;
 
+    // CHANGE 2: renderQuests now checks if all quests are complete
     renderQuests() {
         document.getElementById('questList').innerHTML = QUESTS.map(function (q) {
             var progress = Math.min(storage.getQuestProgress(q.id), q.target);
             var pct = Math.round(progress / q.target * 100);
             return '<div class="quest-item"><div class="quest-title">' + q.title + ': ' + q.desc + '</div><div class="quest-bar"><div class="quest-fill" style="width:' + pct + '%"></div></div><div class="quest-reward">' + progress + '/' + q.target + ' — 🪙 ' + q.reward + '</div></div>';
         }).join('');
+
+        // Check if ALL quests are complete today and mark the date
+        var allComplete = true;
+        for (var qi = 0; qi < QUESTS.length; qi++) {
+            var qProgress = storage.getQuestProgress(QUESTS[qi].id);
+            if (qProgress < QUESTS[qi].target) {
+                allComplete = false;
+                break;
+            }
+        }
+        if (allComplete && storage.markQuestsComplete) {
+            storage.markQuestsComplete(localDateKey(new Date()));
+        }
     }
 
     renderAchievements() {
@@ -587,6 +605,7 @@ class UI {
         }).join('');
     }
 
+    // CHANGE 3: renderSettings now includes ankiImportContainer mount point
     renderSettings() {
         var self = this;
         document.getElementById('settingsContent').innerHTML =
@@ -598,8 +617,10 @@ class UI {
             '<div class="setting-row"><div style="font-size:13px">🎵 Music Volume</div><input type="range" min="0" max="1" step="0.1" value="' + (storage.get('musicVolume') || 0.5) + '" data-range="musicVolume" style="width:100px;accent-color:var(--accent-cyan)"></div>' +
             '<div class="setting-row"><div style="font-size:13px">🔄 Card Freshness Weight</div><input type="range" min="1" max="10" step="1" value="' + (storage.get('cardFreshnessWeight') || 5) + '" data-range="cardFreshnessWeight" style="width:100px;accent-color:var(--accent-cyan)"><span id="freshnessVal" style="font-size:12px;color:var(--accent-gold);min-width:24px;text-align:center">' + (storage.get('cardFreshnessWeight') || 5) + '</span></div>' +
             '<div class="setting-row"><div style="font-size:13px">❓ How to Play</div><button class="btn btn-outline btn-sm" id="settingsTutorialBtn">Tutorial</button></div>' +
-            // NEW: Card report export
+            // Card report export
             '<div class="setting-row"><div style="font-size:13px">📤 Export Card Reports</div><button class="btn btn-outline btn-sm" id="exportReportsBtn">Export</button></div>' +
+            // CHANGE 3: Anki import container mount point
+            '<div id="ankiImportContainer"></div>' +
             '<div style="margin-top:20px"><button class="btn btn-red btn-block" id="resetBtn">🗑 Reset All Progress</button></div>';
 
         document.querySelectorAll('[data-setting]').forEach(function (toggle) {
@@ -642,7 +663,7 @@ class UI {
         var settingsTutBtn = document.getElementById('settingsTutorialBtn');
         if (settingsTutBtn) settingsTutBtn.addEventListener('click', function () { self.showTutorial(); });
 
-        // NEW: Export card reports
+        // Export card reports
         var exportReportsBtn = document.getElementById('exportReportsBtn');
         if (exportReportsBtn) exportReportsBtn.addEventListener('click', function () {
             self.exportCardReports();
@@ -651,7 +672,7 @@ class UI {
         this.applySettings();
     }
 
-    // NEW: Export card reports as JSON download
+    // Export card reports as JSON download
     exportCardReports() {
         var reports = storage.get('cardReports') || [];
         if (reports.length === 0) {
@@ -707,7 +728,6 @@ class UI {
             var color = a >= 70 ? 'var(--accent-green)' : 'var(--accent-red)';
             var mastered = total >= 50 && a >= 80;
             var badge = mastered ? ' ⭐' : '';
-            // NEW: Clickable subjects to open flashcard mode for missed cards
             subjectHTML += '<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.03);cursor:pointer" data-stat-subject="' + s + '"><span style="font-size:12px">' + s + badge + '</span><span style="font-size:12px;font-weight:700;color:' + color + '">' + a + '% (' + total + ')</span></div>';
         });
 
@@ -720,7 +740,6 @@ class UI {
 
         var weakHTML = weakCards.length > 0
             ? weakCards.map(function (w) {
-                // NEW: Clickable weak cards
                 return '<div style="padding:3px 0;font-size:11px;cursor:pointer" data-weak-card="' + w.card.id + '"><span style="color:var(--accent-red);font-weight:700">' + Math.round(w.accuracy * 100) + '%</span> — ' + w.card.ans + ' <span style="color:var(--text-muted)">(' + w.card.subj + ')</span></div>';
             }).join('')
             : '<p style="font-size:11px;color:var(--text-muted)">Play more to see weak areas.</p>';
@@ -731,7 +750,7 @@ class UI {
             '<h3 style="margin:14px 0 6px;font-size:14px">📊 By Subject</h3><div style="background:var(--bg-card);border-radius:10px;padding:10px">' + (subjectHTML || '<p style="font-size:11px;color:var(--text-muted)">No data yet.</p>') + '</div>' +
             '<h3 style="margin:14px 0 6px;font-size:14px">🎯 Weakest Concepts</h3><div style="background:var(--bg-card);border-radius:10px;padding:10px">' + weakHTML + '</div>';
 
-        // NEW: Bind click handlers for subject stats
+        // Bind click handlers for subject stats
         document.querySelectorAll('[data-stat-subject]').forEach(function (el) {
             el.addEventListener('click', function () {
                 var subj = el.dataset.statSubject;
@@ -741,7 +760,7 @@ class UI {
     }
 
     // =============================================
-    // NEW: Flashcard Mode
+    // Flashcard Mode
     // =============================================
 
     startFlashcardSession(subjects) {
@@ -879,7 +898,7 @@ class UI {
     }
 
     // =============================================
-    // NEW: Card Browser
+    // Card Browser
     // =============================================
 
     renderCardBrowser() {
@@ -986,7 +1005,6 @@ class UI {
                 if (storage.isCardDisabled) {
                     storage.toggleCardDisabled(cardId);
                 } else {
-                    // Fallback for old storage
                     var disabled = storage.get('disabledCards') || [];
                     var idx = disabled.indexOf(cardId);
                     if (idx >= 0) disabled.splice(idx, 1);
@@ -999,7 +1017,7 @@ class UI {
     }
 
     // =============================================
-    // NEW: Profile Screen
+    // Profile Screen
     // =============================================
 
     renderProfile() {
@@ -1092,7 +1110,7 @@ class UI {
     }
 
     // =============================================
-    // NEW: How to Play Section
+    // How to Play Section
     // =============================================
 
     renderHowToPlay() {
@@ -1306,7 +1324,7 @@ class UI {
 
     showBuzzwords(card) {
         document.getElementById('buzzText').textContent = card.bw.join(' • ');
-        // NEW: Show revenge card banner if applicable
+        // Show revenge card banner if applicable
         var banner = document.getElementById('revengeCardBanner');
         if (banner) {
             var stat = storage.getCardStat(card.id);
@@ -1504,12 +1522,11 @@ class UI {
                 '<p style="margin-top:5px"><strong>📖 Rule:</strong> ' + c.tp + '</p>' +
                 exceptionHTML +
                 (whyWrong ? '<p style="margin-top:4px"><strong>Why "' + r.choice + '" is wrong:</strong> ' + whyWrong + '</p>' : '') +
-                // CHANGED: "Flag Card" → "Report Card Issue"
                 '<button class="btn btn-outline btn-sm" style="margin-top:6px" onclick="UI_reportCard(\'' + c.id + '\')">📋 Report Card Issue</button>' +
                 '</div>';
         }).join('');
 
-        // CHANGED: Correct answers section collapsed by default
+        // Correct answers section collapsed by default
         var correctAll = game.runCards.filter(function (r) { return r.ok; });
         var correctSample = correctAll.slice(0, 5).map(function (r) {
             var c = r.card;
@@ -1550,7 +1567,7 @@ class UI {
             '</div>' +
             (missed.length > 0 ? '<h3 style="margin:14px 0 6px">❌ Missed Cards (' + missed.length + ')</h3>' + missedHTML : '<h3 style="margin:14px 0 6px;color:var(--accent-green)">🎉 Perfect Run!</h3>') +
             (priorities ? '<h3 style="margin:14px 0 6px">🎯 Review Priority</h3><div style="background:var(--bg-card);border-radius:10px;padding:10px">' + priorities + '</div>' : '') +
-            // CHANGED: Correct answers collapsed by default
+            // Correct answers collapsed by default
             (correctSample ? '<div class="collapsible-section" style="margin:14px 0 6px"><button class="collapsible-toggle" id="correctToggle" style="font-size:13px">✅ Correct Answers (' + correctAll.length + ') <span class="collapse-arrow" id="correctArrow">▸</span></button><div id="correctBody" style="display:none">' + correctSample + '</div></div>' : '') +
             '<div style="display:flex;gap:6px;margin-top:14px">' +
             '<button class="btn btn-green" style="flex:1" id="playAgainBtn">▶ Again</button>' +
@@ -1562,7 +1579,7 @@ class UI {
 
         this.show('screenPostRun');
 
-        // CHANGED: Bind correct answers toggle
+        // Bind correct answers toggle
         var correctToggle = document.getElementById('correctToggle');
         var correctBody = document.getElementById('correctBody');
         var correctArrow = document.getElementById('correctArrow');
@@ -1676,7 +1693,7 @@ class UI {
         }
     }
 
-    // Calendar with quest completion indicator
+    // CHANGE 1: Calendar with day-of-week alignment fix + quest streak summary
     renderCalendar() {
         var grid = document.getElementById('calendarGrid');
         if (!grid) return;
@@ -1686,6 +1703,17 @@ class UI {
         var startDate = new Date(today);
         startDate.setDate(startDate.getDate() - 27);
         grid.innerHTML = '';
+
+        // Add empty placeholder divs to align with day-of-week headers (S M T W T F S)
+        var startDayOfWeek = startDate.getDay(); // 0=Sun, 1=Mon, etc.
+        for (var p = 0; p < startDayOfWeek; p++) {
+            var placeholder = document.createElement('div');
+            placeholder.className = 'calendar-day';
+            placeholder.style.opacity = '0';
+            placeholder.style.pointerEvents = 'none';
+            grid.appendChild(placeholder);
+        }
+
         for (var i = 0; i < 28; i++) {
             var d = new Date(startDate);
             d.setDate(d.getDate() + i);
@@ -1697,7 +1725,7 @@ class UI {
                 else if (calData[key] >= 40) day.classList.add('played-ok');
                 else day.classList.add('played-bad');
             }
-            // NEW: Quest completion star
+            // Quest completion star
             if (questDates[key]) {
                 day.textContent = '⭐';
                 day.style.fontSize = '8px';
@@ -1707,6 +1735,34 @@ class UI {
             }
             if (localDateKey(d) === localDateKey(today)) day.classList.add('today');
             grid.appendChild(day);
+        }
+
+        // Quest streak summary below calendar
+        var streakContainer = document.getElementById('questStreakSummary');
+        if (!streakContainer) {
+            streakContainer = document.createElement('div');
+            streakContainer.id = 'questStreakSummary';
+            streakContainer.style.cssText = 'font-size:11px;color:var(--accent-gold);text-align:center;margin-top:6px;font-weight:700;';
+            grid.parentNode.appendChild(streakContainer);
+        }
+
+        // Calculate consecutive quest completion streak ending today
+        var questStreak = 0;
+        var checkDate = new Date(today);
+        for (var qs = 0; qs < 365; qs++) {
+            var qKey = localDateKey(checkDate);
+            if (questDates[qKey]) {
+                questStreak++;
+                checkDate.setDate(checkDate.getDate() - 1);
+            } else {
+                break;
+            }
+        }
+        if (questStreak > 0) {
+            streakContainer.textContent = '🌟 Quest Streak: ' + questStreak + ' day' + (questStreak !== 1 ? 's' : '') + '!';
+            streakContainer.style.display = 'block';
+        } else {
+            streakContainer.style.display = 'none';
         }
     }
 
@@ -1760,7 +1816,7 @@ function fallbackCopy(text) {
     document.body.removeChild(textarea);
 }
 
-// NEW: Global function for card reporting (replaces flagging)
+// Global function for card reporting (replaces flagging)
 window.UI_reportCard = function (cardId) {
     var reasons = ['incorrect info', 'ambiguous', 'outdated', 'poor distractor', 'other'];
     var reason = prompt(
