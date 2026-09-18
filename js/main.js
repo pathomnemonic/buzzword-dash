@@ -376,10 +376,11 @@ function startMode(mode) {
   }
 
   game.start(mode);
-  ui.hideAll();
-  ui.showHud();
+ui.hideAll();
+ui.showHud();
 
-  ui.countdown(function () {
+game.beginCountdown();
+ui.countdown(function () {
     game.go();
 
     // Install seeded card order for multiplayer after go()
