@@ -105,7 +105,10 @@ var DEFAULTS = {
 
     // Exam filtering
     selectedExams: [],              // Array of exam filter strings (e.g. "step1", "step2", "shelf_im")
-
+    selectedQuestionTypes: [],      // Array of question type strings (e.g. "buzzword_dx", "dx_to_tx")
+    selectedSources: [],            // Array of source discipline strings (e.g. "pathology", "pharmacology")
+    selectedYears: [],              // Array of year numbers (1-4)
+    highYieldOnly: false,           // Only show cards with hx:true
     // Card management
     disabledCards: [],              // Array of card IDs that won't appear in gameplay
     cardReports: [],                // Array of {cardId, reason, text, date}
@@ -206,7 +209,10 @@ class Storage {
 
                 // Exam filtering
                 if (!Array.isArray(this.data.selectedExams)) this.data.selectedExams = [];
-
+                if (!Array.isArray(this.data.selectedQuestionTypes)) this.data.selectedQuestionTypes = [];
+                if (!Array.isArray(this.data.selectedSources)) this.data.selectedSources = [];
+                if (!Array.isArray(this.data.selectedYears)) this.data.selectedYears = [];
+                if (this.data.highYieldOnly === undefined) this.data.highYieldOnly = false;
                 // Card management
                 if (!Array.isArray(this.data.disabledCards)) this.data.disabledCards = [];
                 if (!Array.isArray(this.data.cardReports)) this.data.cardReports = [];
@@ -706,7 +712,37 @@ class Storage {
         }
         this.set('selectedExams', exams);
     }
+    
+    // --- Generic Filter Toggle (for question types, sources, years) ---
 
+    toggleArrayItem(key, value) {
+        var arr = this.get(key);
+        if (!Array.isArray(arr)) arr = [];
+        var idx = arr.indexOf(value);
+        if (idx >= 0) {
+            arr.splice(idx, 1);
+        } else {
+            arr.push(value);
+        }
+        this.set(key, arr);
+        return arr;
+    }
+
+    clearFilter(key) {
+        this.set(key, []);
+    }
+
+    toggleQuestionTypeFilter(type) {
+        return this.toggleArrayItem('selectedQuestionTypes', type);
+    }
+
+    toggleSourceFilter(source) {
+        return this.toggleArrayItem('selectedSources', source);
+    }
+
+    toggleYearFilter(year) {
+        return this.toggleArrayItem('selectedYears', year);
+    }
     // --- Anki API Key ---
 
     getAnkiApiKey() {
