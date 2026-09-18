@@ -35,7 +35,7 @@ import {
 } from './track.js';
 import { buildPlayer, getPlayerLimbs } from './player.js';
 import { setupInput } from './input.js';
-import { pickCard, spawnGates, updateGateHighlights, flashGateResult, resolveStats, validateCardNoLeak } from './gates.js';
+import { pickCard, spawnGates, updateGateHighlights, flashGateResult, resolveStats } from './gates.js';
 import { spawnObstacle, spawnCoinBatch, spawnPowerup } from './obstacles.js';
 import { TrailSystem } from './trails.js';
 import { PowerUpFX } from './powerupfx.js';
@@ -759,7 +759,7 @@ class Game {
   }
 
   spawnEncounter() {
-    var card = pickCard(this.recentIds, this.mode, this.encountersDone);
+    var card = pickCard(this.recentIds, this.mode, this.encountersDone, this.seededCardOrder || null, this.encountersDone);
     if (!card) { this.endRun(); return; }
     this.card = card;
     this.recentIds.push(card.id);
@@ -771,7 +771,7 @@ class Game {
       if (i === correctLane) this.gates.push({ label: card.ans, correct: true });
       else this.gates.push({ label: distractors.shift() || 'N/A', correct: false });
     }
-    validateCardNoLeak(card, this.gates);
+    
 
     var cardStat = storage.getCardStat(card.id);
     if (cardStat.wrong > 0) {
