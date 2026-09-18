@@ -28,7 +28,10 @@ function startMode(mode) {
   game.start(mode);
   ui.hideAll();
   ui.showHud();
-  ui.countdown(function () { game.go(); });
+
+  game.beginCountdown();
+  ui.countdown(function () {
+    game.go(); });
 }
 
 function init() {
