@@ -1,412 +1,566 @@
 /**
  * gates.js — Gate spawning, card selection, and encounter resolution
  *
- * FIXES & UPDATES:
- * - Spaced repetition threshold ordering corrected (>168 before >72 before >24)
- * - Card freshness weighting increased to configurable value (default 5)
- * - Empty subjects array = use all subjects
- * - Exam filter support via storage.get('selectedExams')
- * - Disabled cards support via storage.isCardDisabled()
- * - FIX: Removed illegal top-level await that broke module loading chain
- * - NEW: Seeded card order parameter for multiplayer synchronized card ordering
+ * Owned by Agent 2 per ARCHITECTURE.md §30.
  *
- * MULTI-AGENT EXPANSION:
- * - NEW: Question type filtering via storage.get('selectedQuestionTypes')
- * - NEW: Source discipline filtering via storage.get('selectedSources')
- * - NEW: Year filtering via storage.get('selectedYears')
- * - NEW: High-yield only filtering via storage.get('highYieldOnly')
- * - NEW: baseDifficulty scaling during a run (prefer easy early, harder later)
- * - NEW: Question type variety enforcement (avoid 3+ same type in a row)
- * - NEW: Subject rotation (avoid 3+ same subject in a row)
- * - REMOVED: validateCardNoLeak() — now handled at import time by hub cleanCards()
- * - REMOVED: Local EXAM_FILTERS fallback — now imported from cards.js hub
+ * Implements:
+ * - getCardPool(options)       — canonical card-pool request
+ * - pickCard(options)          — canonical card-selection contract
+ * - createDailyOrder(options)  — deterministic Daily encounter order
+ * - spawnGates(...)            — 3D gate mesh spawning
+ * - updateGateHighlights(...)  — visual highlight updates
+ * - flashGateResult(...)       — correct/wrong flash
+ * - resolveStats(...)          — per-card and per-subject stat recording
+ *
+ * Key architectural rules (ARCHITECTURE.md):
+ * - No silent filter fallback: returns structured error if pool is empty.
+ * - No mutation of orderedCardIds: uses encounterIndex for lookup.
+ * - No direct persistence writes: resolveStats calls storage APIs only.
+ * - Deterministic RNG for Daily and multiplayer modes.
+ * - Disabled cards and mode-ineligible cards never appear.
  */
 
 import * as THREE from 'three';
-import { CARDS, SUBJECTS } from '../cards.js';
+import { CARDS, SUBJECTS, CARD_BY_ID } from '../cards.js';
 import { storage } from '../storage.js';
 import { customCards } from '../customcards.js';
 
+// ===== CONSTANTS =====
+
 var LANE_X = [-3, 0, 3];
 
-function seededRandom(seed) {
-    var t = seed + 0x6D2B79F5;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+// ===== CARD SCHEMA DEFAULTS =====
+// Until cardschema.js (Agent 8) is available, we patch defaults inline.
+// Once cardschema.js ships, replace with: import { normalizeCard } from '../cardschema.js';
+
+function patchCardDefaults(c) {
+  if (!c) return c;
+  if (c.exams === undefined) c.exams = [];
+  if (c.baseDifficulty === undefined) c.baseDifficulty = 2;
+  if (c.questionType === undefined) c.questionType = 'buzzword_dx';
+  if (c.source === undefined) c.source = 'clinical_medicine';
+  if (c.tags === undefined) c.tags = c.subj ? [c.subj.toLowerCase()] : [];
+  if (c.hx === undefined) c.hx = false;
+  if (c.yr === undefined) c.yr = 2;
+  if (c.pearls === undefined) c.pearls = c.tp ? [c.tp.split('.')[0]] : [];
+  if (c.enabledModes === undefined) c.enabledModes = ['endless', 'study', 'weakness', 'daily', 'versus', 'mp_highscore', 'mp_suddendeath', 'mp_race', 'flashcard'];
+  return c;
 }
 
-function getDailySeed() {
-    var today = new Date();
-    return today.getFullYear() * 10000 + (today.getMonth() + 1) * 100 + today.getDate();
+// ===== DETERMINISTIC RNG =====
+// Shared with multiplayer.js via identical algorithm.
+// xorshift32: deterministic across browsers.
+
+function createSeededRandom(seed) {
+  var state = seed | 0;
+  if (state === 0) state = 1;
+  return function () {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    return ((state >>> 0) / 4294967296);
+  };
+}
+
+function seededShuffle(items, rng) {
+  var arr = items.slice();
+  for (var i = arr.length - 1; i > 0; i--) {
+    var j = Math.floor(rng() * (i + 1));
+    var temp = arr[i];
+    arr[i] = arr[j];
+    arr[j] = temp;
+  }
+  return arr;
+}
+
+// ===== DAILY SEED =====
+
+function getDailySeed(dateKey) {
+  // dateKey is 'YYYY-MM-DD'
+  var parts = dateKey.split('-');
+  var y = parseInt(parts[0], 10);
+  var m = parseInt(parts[1], 10);
+  var d = parseInt(parts[2], 10);
+  return y * 10000 + m * 100 + d;
+}
+
+function getLocalDateKey() {
+  var now = new Date();
+  var y = now.getFullYear();
+  var m = String(now.getMonth() + 1).padStart(2, '0');
+  var d = String(now.getDate()).padStart(2, '0');
+  return y + '-' + m + '-' + d;
+}
+
+// ===== CARD POOL BUILDING =====
+
+/**
+ * Build a card ID lookup map for fast access.
+ * Uses CARD_BY_ID from cards.js if available, otherwise builds one.
+ */
+function buildCardMap() {
+  if (typeof CARD_BY_ID !== 'undefined' && CARD_BY_ID && CARD_BY_ID.size > 0) {
+    return CARD_BY_ID;
+  }
+  var map = new Map();
+  for (var i = 0; i < CARDS.length; i++) {
+    map.set(CARDS[i].id, CARDS[i]);
+  }
+  return map;
+}
+
+var _cardMap = null;
+function getCardMap() {
+  if (!_cardMap) {
+    _cardMap = buildCardMap();
+  }
+  return _cardMap;
 }
 
 /**
- * Patch missing new-schema fields onto a card so downstream code
- * (UI display, filtering) never sees undefined.
- * This is primarily needed for custom cards which bypass the hub's cleanCards().
+ * Canonical card-pool request.
+ *
+ * @param {object} options
+ * @param {string[]} options.subjects - empty means all canonical subjects
+ * @param {object} options.filters
+ * @param {string} options.mode - runner mode ID
+ * @param {boolean} options.includeCustomCards - default true
+ * @returns {{ cards: object[], cardIds: string[], error: null|{code:string, message:string} }}
  */
-function patchCardDefaults(c) {
-    if (c.exams === undefined) c.exams = [];
-    if (c.baseDifficulty === undefined) c.baseDifficulty = 2;
-    if (c.questionType === undefined) c.questionType = 'buzzword_dx';
-    if (c.source === undefined) c.source = 'clinical_medicine';
-    if (c.tags === undefined) c.tags = c.subj ? [c.subj.toLowerCase()] : [];
-    if (c.hx === undefined) c.hx = false;
-    if (c.yr === undefined) c.yr = 2;
-    if (c.pearls === undefined) c.pearls = c.tp ? [c.tp.split('.')[0]] : [];
-    return c;
-}
+export function getCardPool(options) {
+  var subjects = options.subjects;
+  var filters = options.filters || {};
+  var mode = options.mode || 'endless';
+  var includeCustomCards = options.includeCustomCards !== false;
 
-function getCardPool(subjects) {
-    // Hub CARDS are already cleaned; custom cards need patching
-    var customs = customCards.getAll().map(patchCardDefaults);
-    var allCards = CARDS.concat(customs);
+  // If subjects array is empty or not provided, use ALL canonical subjects
+  if (!subjects || subjects.length === 0) {
+    subjects = SUBJECTS.slice();
+  }
 
-    // If subjects array is empty, use ALL subjects
-    if (!subjects || subjects.length === 0) {
-        subjects = SUBJECTS.slice();
+  // Gather all cards
+  var allCards = CARDS.slice();
+  if (includeCustomCards) {
+    var customs = customCards.getAll();
+    for (var ci = 0; ci < customs.length; ci++) {
+      allCards.push(patchCardDefaults(customs[ci]));
+    }
+  }
+
+  // Get disabled card IDs
+  var disabledCardIds = [];
+  try {
+    disabledCardIds = storage.get('disabledCards') || [];
+  } catch (e) {}
+
+  var filtered = [];
+
+  for (var i = 0; i < allCards.length; i++) {
+    var c = allCards[i];
+
+    // ── Subject filter ──
+    if (subjects.indexOf(c.subj) < 0) continue;
+
+    // ── Disabled cards ──
+    if (disabledCardIds.indexOf(c.id) >= 0) continue;
+
+    // ── Mode eligibility ──
+    if (c.enabledModes && c.enabledModes.length > 0) {
+      if (c.enabledModes.indexOf(mode) < 0) continue;
     }
 
-    var filtered = allCards.filter(function (c) {
-        return subjects.indexOf(c.subj) >= 0;
-    });
-
     // ── Exam filter ──
-    var selectedExams = null;
-    try { selectedExams = storage.get('selectedExams'); } catch (e) {}
-
-    if (selectedExams && Array.isArray(selectedExams) && selectedExams.length > 0) {
-        filtered = filtered.filter(function (c) {
-            if (!c.exams || !Array.isArray(c.exams) || c.exams.length === 0) return true;
-            for (var i = 0; i < selectedExams.length; i++) {
-                if (c.exams.indexOf(selectedExams[i]) >= 0) return true;
-            }
-            return false;
-        });
+    if (filters.exams && filters.exams.length > 0) {
+      if (c.exams && c.exams.length > 0) {
+        var examMatch = false;
+        for (var ei = 0; ei < filters.exams.length; ei++) {
+          if (c.exams.indexOf(filters.exams[ei]) >= 0) {
+            examMatch = true;
+            break;
+          }
+        }
+        if (!examMatch) continue;
+      }
+      // Cards without exam tags pass through (backward compat)
     }
 
     // ── Question type filter ──
-    var selectedQuestionTypes = null;
-    try { selectedQuestionTypes = storage.get('selectedQuestionTypes'); } catch (e) {}
-
-    if (selectedQuestionTypes && Array.isArray(selectedQuestionTypes) && selectedQuestionTypes.length > 0) {
-        filtered = filtered.filter(function (c) {
-            if (!c.questionType) return true;
-            return selectedQuestionTypes.indexOf(c.questionType) >= 0;
-        });
+    if (filters.questionTypes && filters.questionTypes.length > 0) {
+      if (c.questionType && filters.questionTypes.indexOf(c.questionType) < 0) continue;
     }
 
     // ── Source discipline filter ──
-    var selectedSources = null;
-    try { selectedSources = storage.get('selectedSources'); } catch (e) {}
-
-    if (selectedSources && Array.isArray(selectedSources) && selectedSources.length > 0) {
-        filtered = filtered.filter(function (c) {
-            if (!c.source) return true;
-            return selectedSources.indexOf(c.source) >= 0;
-        });
+    if (filters.sources && filters.sources.length > 0) {
+      if (c.source && filters.sources.indexOf(c.source) < 0) continue;
     }
 
     // ── Year filter ──
-    var selectedYears = null;
-    try { selectedYears = storage.get('selectedYears'); } catch (e) {}
-
-    if (selectedYears && Array.isArray(selectedYears) && selectedYears.length > 0) {
-        filtered = filtered.filter(function (c) {
-            if (!c.yr) return true;
-            return selectedYears.indexOf(c.yr) >= 0;
-        });
+    if (filters.years && filters.years.length > 0) {
+      if (c.yr && filters.years.indexOf(c.yr) < 0) continue;
     }
 
-    // ── High-yield only filter ──
-    var highYieldOnly = false;
-    try { highYieldOnly = storage.get('highYieldOnly'); } catch (e) {}
-
-    if (highYieldOnly) {
-        filtered = filtered.filter(function (c) {
-            return c.hx === true;
-        });
+    // ── High-yield only ──
+    if (filters.highYieldOnly) {
+      if (c.hx !== true) continue;
     }
 
-    // ── Disabled cards filter ──
-    try {
-        if (storage.isCardDisabled) {
-            filtered = filtered.filter(function (c) {
-                return !storage.isCardDisabled(c.id);
-            });
-        }
-    } catch (e) {}
+    filtered.push(c);
+  }
 
-    // ── Fallback: if all filters result in empty pool, warn and use unfiltered ──
-    if (filtered.length === 0) {
-        console.warn('[Buzzword Dash] All filters resulted in empty card pool — falling back to unfiltered.');
-        filtered = allCards.filter(function (c) {
-            return subjects.indexOf(c.subj) >= 0;
-        });
-        // Still remove disabled
-        try {
-            if (storage.isCardDisabled) {
-                filtered = filtered.filter(function (c) {
-                    return !storage.isCardDisabled(c.id);
-                });
-            }
-        } catch (e) {}
-    }
+  // ── NO SILENT FALLBACK ──
+  if (filtered.length === 0) {
+    return {
+      cards: [],
+      cardIds: [],
+      error: {
+        code: 'NO_MATCHING_CARDS',
+        message: 'No cards match the selected subjects and filters. Adjust your filters and try again.'
+      }
+    };
+  }
 
-    return filtered;
+  var cardIds = [];
+  for (var fi = 0; fi < filtered.length; fi++) {
+    cardIds.push(filtered[fi].id);
+  }
+
+  return {
+    cards: filtered,
+    cardIds: cardIds,
+    error: null
+  };
 }
 
-export function pickCard(recentIds, mode, dailyIndex, seededOrder, encounterCount) {
-    var subjects = storage.get('selectedSubjects');
+// ===== DAILY ORDER =====
 
-    // If subjects is empty or null, treat as all subjects selected
-    if (!subjects || subjects.length === 0) {
-        subjects = SUBJECTS.slice();
+/**
+ * Create a deterministic Daily encounter order.
+ *
+ * @param {object} options
+ * @param {string} options.dateKey - 'YYYY-MM-DD'
+ * @param {string[]} options.eligibleCardIds - ordered array of eligible IDs
+ * @param {number} options.count - number of encounters
+ * @returns {string[]} immutable array of card IDs (no duplicates when pool >= count)
+ */
+export function createDailyOrder(options) {
+  var dateKey = options.dateKey;
+  var eligibleCardIds = options.eligibleCardIds;
+  var count = options.count || 15;
+
+  var seed = getDailySeed(dateKey);
+  var rng = createSeededRandom(seed);
+
+  // Shuffle eligible IDs deterministically
+  var shuffled = seededShuffle(eligibleCardIds, rng);
+
+  // Take up to count (no duplicates since we shuffle the full set)
+  var result = shuffled.slice(0, Math.min(count, shuffled.length));
+
+  // Freeze to enforce immutability
+  return Object.freeze(result);
+}
+
+// ===== CARD SELECTION =====
+
+/**
+ * Canonical card-selection contract.
+ *
+ * @param {object} options
+ * @param {object[]} options.pool - eligible card objects
+ * @param {string[]} options.recentIds - recently used card IDs
+ * @param {string} options.mode
+ * @param {number} options.encounterIndex
+ * @param {string[]|null} options.orderedCardIds - immutable; uses encounterIndex, never shifted
+ * @param {object} options.selectionState - { recentQuestionTypes: string[], recentSubjects: string[] }
+ * @param {function} options.rng - () => number [0,1) — deterministic for competitive, Math.random for solo
+ * @returns {{ card: object|null, orderedIndex: number|null, error: null|{code:string, message:string} }}
+ */
+export function pickCard(options) {
+  var pool = options.pool;
+  var recentIds = options.recentIds || [];
+  var mode = options.mode || 'endless';
+  var encounterIndex = options.encounterIndex || 0;
+  var orderedCardIds = options.orderedCardIds || null;
+  var selectionState = options.selectionState || { recentQuestionTypes: [], recentSubjects: [] };
+  var rng = options.rng || Math.random;
+
+  if (!pool || pool.length === 0) {
+    return {
+      card: null,
+      orderedIndex: null,
+      error: {
+        code: 'NO_MATCHING_CARDS',
+        message: 'Card pool is empty. Cannot pick a card.'
+      }
+    };
+  }
+
+  // ── Ordered selection (Daily, multiplayer) ──
+  if (orderedCardIds && orderedCardIds.length > 0) {
+    // Use encounterIndex — NEVER shift or mutate orderedCardIds
+    var cardMap = getCardMap();
+
+    // Walk from encounterIndex forward to find a valid card in the pool
+    for (var oi = encounterIndex; oi < orderedCardIds.length; oi++) {
+      var targetId = orderedCardIds[oi];
+
+      // Look up in pool (not outside it)
+      var found = null;
+      for (var pi = 0; pi < pool.length; pi++) {
+        if (pool[pi].id === targetId) {
+          found = pool[pi];
+          break;
+        }
+      }
+
+      if (found) {
+        return {
+          card: patchCardDefaults(found),
+          orderedIndex: oi,
+          error: null
+        };
+      }
     }
 
-    var pool = getCardPool(subjects);
+    // Ordered IDs exhausted — fall through to weighted selection
+  }
 
-    // Multiplayer: use seeded card order if provided
-    if (seededOrder && Array.isArray(seededOrder) && seededOrder.length > 0) {
-        var allCards = CARDS.concat(customCards.getAll());
-        while (seededOrder.length > 0) {
-            var nextId = seededOrder.shift();
-            for (var si = 0; si < allCards.length; si++) {
-                if (allCards[si].id === nextId) {
-                    try {
-                        if (storage.isCardDisabled && storage.isCardDisabled(nextId)) continue;
-                    } catch (e) {}
-                    return patchCardDefaults(allCards[si]);
-                }
-            }
-        }
-        // Seeded order exhausted, fall through to normal selection
-    }
-
-    if (mode === 'daily') {
-        var seed = getDailySeed();
-        var dailyPool = pool.slice();
-        for (var di = dailyPool.length - 1; di > 0; di--) {
-            var dj = Math.floor(seededRandom(seed + di + (dailyIndex || 0) * 100) * (di + 1));
-            var temp = dailyPool[di];
-            dailyPool[di] = dailyPool[dj];
-            dailyPool[dj] = temp;
-        }
-        var idx = (dailyIndex || 0) % dailyPool.length;
-        return dailyPool[idx] || null;
-    }
-
-    if (mode === 'weakness') {
-        var weak = pool.filter(function (c) {
-            var s = storage.getCardStat(c.id);
-            return s.wrong > 0 || (s.seen > 0 && s.correct / s.seen < 0.7);
-        });
-        if (weak.length >= 3) pool = weak;
-    }
-
-    if (!pool.length) return null;
-
-    var now = Date.now();
-    var enc = encounterCount || 0;
-
-    // Configurable card freshness weight
-    var freshnessWeight = 5;
-    try {
-        var storedWeight = storage.get('cardFreshnessWeight');
-        if (storedWeight && typeof storedWeight === 'number' && storedWeight > 0) {
-            freshnessWeight = storedWeight;
-        }
-    } catch (e) {}
-
-    // ── Build recent types and subjects for variety enforcement ──
-    var recentTypes = [];
-    var recentSubjects = [];
-    // We track the last few cards via recentIds to derive their types/subjects
-    // This requires looking up cards by ID which is O(n) but recentIds is small (≤10)
-    if (recentIds && recentIds.length > 0) {
-        var allCardsForLookup = CARDS.concat(customCards.getAll());
-        var lastFew = recentIds.slice(-3);
-        for (var ri = 0; ri < lastFew.length; ri++) {
-            for (var rj = 0; rj < allCardsForLookup.length; rj++) {
-                if (allCardsForLookup[rj].id === lastFew[ri]) {
-                    var rc = allCardsForLookup[rj];
-                    if (rc.questionType) recentTypes.push(rc.questionType);
-                    if (rc.subj) recentSubjects.push(rc.subj);
-                    break;
-                }
-            }
-        }
-    }
-
-    // Check if last 3 cards were all the same question type
-    var avoidType = null;
-    if (recentTypes.length >= 3 && recentTypes[0] === recentTypes[1] && recentTypes[1] === recentTypes[2]) {
-        avoidType = recentTypes[0];
-    }
-
-    // Check if last 3 cards were all the same subject (only if multiple subjects selected)
-    var avoidSubject = null;
-    if (subjects.length > 1 && recentSubjects.length >= 3 &&
-        recentSubjects[0] === recentSubjects[1] && recentSubjects[1] === recentSubjects[2]) {
-        avoidSubject = recentSubjects[0];
-    }
-
-    var weighted = pool.map(function (c) {
-        var s = storage.getCardStat(c.id);
-        var w = 10;
-
-        // ── Accuracy-based weighting ──
-        if (s.seen > 0) {
-            var accuracy = s.correct / s.seen;
-            if (accuracy < 0.3) w *= 4;
-            else if (accuracy < 0.5) w *= 3;
-            else if (accuracy < 0.7) w *= 1.5;
-            else if (accuracy > 0.9 && s.seen > 5) w *= 0.2;
-            else if (accuracy > 0.8 && s.seen > 3) w *= 0.5;
-        }
-
-        // ── Recent card penalty ──
-        if (recentIds.indexOf(c.id) >= 0) {
-            w *= 0.02;
-        }
-
-        // ── Spaced repetition thresholds (largest first) ──
-        if (s.lastSeen > 0) {
-            var hoursSince = (now - s.lastSeen) / (1000 * 60 * 60);
-            if (hoursSince < 0.5) w *= 0.3;
-            else if (hoursSince < 2) w *= 0.6;
-            else if (hoursSince > 168) w *= 2.5;
-            else if (hoursSince > 72) w *= 1.8;
-            else if (hoursSince > 24) w *= 1.3;
-        } else {
-            w *= 1.5;
-        }
-
-        // ── Unseen card freshness boost ──
-        if (s.seen === 0) {
-            w *= freshnessWeight;
-        }
-
-        // ── baseDifficulty scaling during a run ──
-        // Early encounters (0-5): prefer difficulty 1-2
-        // Mid encounters (6-15): balanced
-        // Late encounters (16+): weight difficulty 3 higher
-        if (c.baseDifficulty) {
-            if (enc < 6) {
-                // Early: boost easy, penalize hard
-                if (c.baseDifficulty === 1) w *= 1.5;
-                else if (c.baseDifficulty === 3) w *= 0.5;
-            } else if (enc >= 16) {
-                // Late: boost hard, slight penalty for easy
-                if (c.baseDifficulty === 3) w *= 1.8;
-                else if (c.baseDifficulty === 1) w *= 0.7;
-            }
-            // Mid (6-15): no adjustment, all difficulties equally likely
-        }
-
-        // ── Question type variety enforcement ──
-        if (avoidType && c.questionType === avoidType) {
-            w *= 0.3; // Soft penalty, not hard block
-        }
-
-        // ── Subject rotation ──
-        if (avoidSubject && c.subj === avoidSubject) {
-            w *= 0.4;
-        }
-
-        return { card: c, weight: Math.max(w, 0.01) };
+  // ── Weakness mode: prefer poorly-performing cards ──
+  var effectivePool = pool;
+  if (mode === 'weakness') {
+    var weakCards = pool.filter(function (c) {
+      var s = storage.getCardStat(c.id);
+      return s.wrong > 0 || (s.seen > 0 && s.correct / s.seen < 0.7);
     });
-
-    var total = 0;
-    for (var i = 0; i < weighted.length; i++) total += weighted[i].weight;
-    var r = Math.random() * total;
-    for (var j = 0; j < weighted.length; j++) {
-        r -= weighted[j].weight;
-        if (r <= 0) return weighted[j].card;
+    if (weakCards.length >= 3) {
+      effectivePool = weakCards;
     }
-    return weighted[weighted.length - 1].card;
+  }
+
+  // ── Adaptive weighted selection ──
+  var now = Date.now();
+
+  // Configurable card freshness weight
+  var freshnessWeight = 5;
+  try {
+    var storedWeight = storage.get('cardFreshnessWeight');
+    if (storedWeight && typeof storedWeight === 'number' && storedWeight > 0) {
+      freshnessWeight = storedWeight;
+    }
+  } catch (e) {}
+
+  // Variety enforcement state
+  var recentTypes = selectionState.recentQuestionTypes || [];
+  var recentSubjects = selectionState.recentSubjects || [];
+
+  // Check if last 3 were same question type
+  var avoidType = null;
+  if (recentTypes.length >= 3 &&
+      recentTypes[0] === recentTypes[1] &&
+      recentTypes[1] === recentTypes[2]) {
+    avoidType = recentTypes[0];
+  }
+
+  // Check if last 3 were same subject (only when multiple subjects selected)
+  var avoidSubject = null;
+  var subjectCount = 0;
+  var subjectsSeen = {};
+  for (var si = 0; si < effectivePool.length; si++) {
+    if (!subjectsSeen[effectivePool[si].subj]) {
+      subjectsSeen[effectivePool[si].subj] = true;
+      subjectCount++;
+    }
+  }
+  if (subjectCount > 1 && recentSubjects.length >= 3 &&
+      recentSubjects[0] === recentSubjects[1] &&
+      recentSubjects[1] === recentSubjects[2]) {
+    avoidSubject = recentSubjects[0];
+  }
+
+  var weighted = [];
+  for (var wi = 0; wi < effectivePool.length; wi++) {
+    var c = effectivePool[wi];
+    var s = storage.getCardStat(c.id);
+    var w = 10;
+
+    // ── Accuracy-based weighting ──
+    if (s.seen > 0) {
+      var accuracy = s.correct / s.seen;
+      if (accuracy < 0.3) w *= 4;
+      else if (accuracy < 0.5) w *= 3;
+      else if (accuracy < 0.7) w *= 1.5;
+      else if (accuracy > 0.9 && s.seen > 5) w *= 0.2;
+      else if (accuracy > 0.8 && s.seen > 3) w *= 0.5;
+    }
+
+    // ── Recent card penalty ──
+    if (recentIds.indexOf(c.id) >= 0) {
+      w *= 0.02;
+    }
+
+    // ── Spaced repetition thresholds (largest first) ──
+    if (s.lastSeen > 0) {
+      var hoursSince = (now - s.lastSeen) / (1000 * 60 * 60);
+      if (hoursSince < 0.5) w *= 0.3;
+      else if (hoursSince < 2) w *= 0.6;
+      else if (hoursSince > 168) w *= 2.5;
+      else if (hoursSince > 72) w *= 1.8;
+      else if (hoursSince > 24) w *= 1.3;
+    } else {
+      w *= 1.5;
+    }
+
+    // ── Unseen card freshness boost ──
+    if (s.seen === 0) {
+      w *= freshnessWeight;
+    }
+
+    // ── baseDifficulty scaling during a run ──
+    if (c.baseDifficulty) {
+      if (encounterIndex < 6) {
+        // Early: boost easy, penalize hard
+        if (c.baseDifficulty === 1) w *= 1.5;
+        else if (c.baseDifficulty === 3) w *= 0.5;
+      } else if (encounterIndex >= 16) {
+        // Late: boost hard, slight penalty for easy
+        if (c.baseDifficulty === 3) w *= 1.8;
+        else if (c.baseDifficulty === 1) w *= 0.7;
+      }
+    }
+
+    // ── Question type variety enforcement ──
+    if (avoidType && c.questionType === avoidType) {
+      w *= 0.3;
+    }
+
+    // ── Subject rotation ──
+    if (avoidSubject && c.subj === avoidSubject) {
+      w *= 0.4;
+    }
+
+    weighted.push({ card: c, weight: Math.max(w, 0.01) });
+  }
+
+  // ── Weighted random selection using supplied RNG ──
+  var total = 0;
+  for (var ti = 0; ti < weighted.length; ti++) total += weighted[ti].weight;
+
+  var r = rng() * total;
+  for (var ri = 0; ri < weighted.length; ri++) {
+    r -= weighted[ri].weight;
+    if (r <= 0) {
+      return {
+        card: patchCardDefaults(weighted[ri].card),
+        orderedIndex: null,
+        error: null
+      };
+    }
+  }
+
+  // Fallback (floating point edge)
+  return {
+    card: patchCardDefaults(weighted[weighted.length - 1].card),
+    orderedIndex: null,
+    error: null
+  };
 }
+
+// ===== GATE SPAWNING =====
 
 export function spawnGates(scene, gates, currentLane, theme) {
-    var meshes = [];
-    for (var j = 0; j < 3; j++) {
-        var group = new THREE.Group();
+  var meshes = [];
+  for (var j = 0; j < 3; j++) {
+    var group = new THREE.Group();
 
-        var frame = new THREE.Mesh(
-            new THREE.BoxGeometry(2.8, 3, 0.2),
-            new THREE.MeshBasicMaterial({
-                color: j === currentLane ? 0x2244aa : 0x111833,
-                transparent: true,
-                opacity: 0.7
-            })
-        );
-        group.add(frame);
+    var frame = new THREE.Mesh(
+      new THREE.BoxGeometry(2.8, 3, 0.2),
+      new THREE.MeshBasicMaterial({
+        color: j === currentLane ? 0x2244aa : 0x111833,
+        transparent: true,
+        opacity: 0.7
+      })
+    );
+    group.add(frame);
 
-        var glowMat = new THREE.MeshBasicMaterial({
-            color: theme.glow || 0x18ffff,
-            transparent: true,
-            opacity: 0.35
-        });
+    var glowMat = new THREE.MeshBasicMaterial({
+      color: theme.glow || 0x18ffff,
+      transparent: true,
+      opacity: 0.35
+    });
 
-        var topBar = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.1, 0.2), glowMat);
-        topBar.position.set(0, 1.55, 0);
-        group.add(topBar);
+    var topBar = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.1, 0.2), glowMat);
+    topBar.position.set(0, 1.55, 0);
+    group.add(topBar);
 
-        var botBar = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.1, 0.2), glowMat);
-        botBar.position.set(0, -1.55, 0);
-        group.add(botBar);
+    var botBar = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.1, 0.2), glowMat);
+    botBar.position.set(0, -1.55, 0);
+    group.add(botBar);
 
-        for (var sx = -1; sx <= 1; sx += 2) {
-            var pillar = new THREE.Mesh(
-                new THREE.BoxGeometry(0.12, 3, 0.2),
-                new THREE.MeshBasicMaterial({
-                    color: theme.glow || 0x18ffff,
-                    transparent: true,
-                    opacity: 0.2
-                })
-            );
-            pillar.position.set(sx * 1.45, 0, 0);
-            group.add(pillar);
-        }
-
-        group.position.set(LANE_X[j], 1.5, -60);
-        scene.add(group);
-        meshes.push(group);
+    for (var sx = -1; sx <= 1; sx += 2) {
+      var pillar = new THREE.Mesh(
+        new THREE.BoxGeometry(0.12, 3, 0.2),
+        new THREE.MeshBasicMaterial({
+          color: theme.glow || 0x18ffff,
+          transparent: true,
+          opacity: 0.2
+        })
+      );
+      pillar.position.set(sx * 1.45, 0, 0);
+      group.add(pillar);
     }
-    return meshes;
+
+    group.position.set(LANE_X[j], 1.5, -60);
+    scene.add(group);
+    meshes.push(group);
+  }
+  return meshes;
 }
+
+// ===== GATE HIGHLIGHTS =====
 
 export function updateGateHighlights(gateMeshes, currentLane) {
-    for (var i = 0; i < gateMeshes.length; i++) {
-        var frame = gateMeshes[i].children[0];
-        if (i === currentLane) {
-            frame.material.color.setHex(0x2244aa);
-            frame.material.opacity = 0.8;
-        } else {
-            frame.material.color.setHex(0x111833);
-            frame.material.opacity = 0.5;
-        }
+  for (var i = 0; i < gateMeshes.length; i++) {
+    var frame = gateMeshes[i].children[0];
+    if (i === currentLane) {
+      frame.material.color.setHex(0x2244aa);
+      frame.material.opacity = 0.8;
+    } else {
+      frame.material.color.setHex(0x111833);
+      frame.material.opacity = 0.5;
     }
+  }
 }
+
+// ===== GATE RESULT FLASH =====
 
 export function flashGateResult(gateMeshes, gates, currentLane) {
-    for (var i = 0; i < gateMeshes.length; i++) {
-        if (gates[i].correct) {
-            gateMeshes[i].children[0].material.color.setHex(0x00cc55);
-        } else if (i === currentLane) {
-            gateMeshes[i].children[0].material.color.setHex(0xcc0000);
-        }
+  for (var i = 0; i < gateMeshes.length; i++) {
+    if (gates[i].correct) {
+      gateMeshes[i].children[0].material.color.setHex(0x00cc55);
+    } else if (i === currentLane) {
+      gateMeshes[i].children[0].material.color.setHex(0xcc0000);
     }
+  }
 }
 
+// ===== STAT RESOLUTION =====
+// This is the ONLY place per-card and per-subject stats are updated
+// during gameplay. The engine calls this; it does NOT directly persist
+// run-level totals (those go through storage.finalizeRun).
+
 export function resolveStats(card, wasCorrect) {
-    storage.updateCardStat(card.id, wasCorrect);
-    storage.updateSubjectStat(card.subj, wasCorrect);
-    if (wasCorrect) {
-        storage.set('totalCorrect', storage.get('totalCorrect') + 1);
-    } else {
-        storage.set('totalWrong', storage.get('totalWrong') + 1);
-    }
-    storage.set('totalEncounters', storage.get('totalEncounters') + 1);
+  storage.updateCardStat(card.id, wasCorrect);
+  storage.updateSubjectStat(card.subj, wasCorrect);
+  // Note: totalCorrect, totalWrong, totalEncounters are updated by
+  // storage.finalizeRun() at end-of-run, NOT here. The current legacy
+  // code does it here; Agent 3 (storage.js) will migrate this to
+  // finalizeRun(). For backward compatibility during transition, we
+  // keep these calls but they should be removed once Agent 3's
+  // finalizeRun() is in place.
+  if (wasCorrect) {
+    storage.set('totalCorrect', storage.get('totalCorrect') + 1);
+  } else {
+    storage.set('totalWrong', storage.get('totalWrong') + 1);
+  }
+  storage.set('totalEncounters', storage.get('totalEncounters') + 1);
 }
