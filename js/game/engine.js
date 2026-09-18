@@ -38,7 +38,7 @@ import {
 } from './track.js';
 import { buildPlayer, getPlayerLimbs } from './player.js';
 import { setupInput } from './input.js';
-import { pickCard, spawnGates, updateGateHighlights, flashGateResult, resolveStats } from './gates.js';
+import { getCardPool, pickCard, spawnGates, updateGateHighlights, flashGateResult, resolveStats } from './gates.js';
 import { spawnObstacle, spawnCoinBatch, spawnPowerup } from './obstacles.js';
 import { TrailSystem } from './trails.js';
 import { PowerUpFX } from './powerupfx.js';
@@ -1169,12 +1169,49 @@ class Game {
   _spawnEncounter() {
     // Use seeded order if available (multiplayer)
     var card = null;
-    if (this.seededCardOrder && this._seededCardIndex < this.seededCardOrder.length) {
-      card = pickCard(this.recentIds, this.mode, this._seededCardIndex, this.seededCardOrder, this.encountersDone);
-      this._seededCardIndex++;
-    } else {
-      card = pickCard(this.recentIds, this.mode, this.encountersDone, null, this.encountersDone);
-    }
+   var poolResult = getCardPool({
+    subjects: storage.get('selectedSubjects') || [],
+    filters: {
+        exams: storage.get('selectedExams') || [],
+        questionTypes: storage.get('selectedQuestionTypes') || [],
+        sources: storage.get('selectedSources') || [],
+        years: storage.get('selectedYears') || [],
+        highYieldOnly: storage.get('highYieldOnly') || false,
+        includeCustomCards: true
+    },
+    mode: this.mode
+});
+
+if (poolResult.error || poolResult.cards.length === 0) {
+    this._endRun(RUN_END_REASONS.NO_MATCHING_CARDS);
+    return;
+}
+
+var pickResult;
+if (this.seededCardOrder && this._seededCardIndex < this.seededCardOrder.length) {
+    pickResult = pickCard({
+        pool: poolResult.cards,
+        recentIds: this.recentIds,
+        mode: this.mode,
+        encounterIndex: this._seededCardIndex,
+        orderedCardIds: this.seededCardOrder,
+        selectionState: this._selectionState,
+        rng: Math.random
+    });
+    this._seededCardIndex++;
+} else {
+    pickResult = pickCard({
+        pool: poolResult.cards,
+        recentIds: this.recentIds,
+        mode: this.mode,
+        encounterIndex: this.encountersDone,
+        orderedCardIds: null,
+        selectionState: this._selectionState,
+        rng: Math.random
+    });
+}
+
+card = pickResult ? pickResult.card : null;
 
     if (!card) {
       this._endRun(RUN_END_REASONS.NO_MATCHING_CARDS);
