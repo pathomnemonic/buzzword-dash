@@ -242,6 +242,8 @@ class UI {
 
         var tutorialBtn = document.getElementById('tutorialBtn');
         if (tutorialBtn) tutorialBtn.addEventListener('click', function () { self.showTutorial(); });
+        var howToPlayBtn = document.getElementById('howToPlayBtn');
+        if (howToPlayBtn) howToPlayBtn.addEventListener('click', function () { self.showTutorial(); });
         var tutNextBtn = document.getElementById('tutNextBtn');
         if (tutNextBtn) tutNextBtn.addEventListener('click', function () { self.tutorialNext(); });
         var tutCloseBtn = document.getElementById('tutCloseBtn');
@@ -434,7 +436,140 @@ class UI {
             });
         });
     }
+    
+    renderAdvancedFilters() {
+        var container = document.getElementById('advancedFilterContainer');
+        if (!container) return;
+        var self = this;
 
+        var QUESTION_TYPES = [
+            { id: "buzzword_dx", label: "🩺 Dx" },
+            { id: "dx_to_tx", label: "💊 Tx" },
+            { id: "dx_to_workup", label: "🔬 Workup" },
+            { id: "mechanism", label: "⚙️ Mechanism" },
+            { id: "side_effect", label: "⚠️ Side Effect" },
+            { id: "lab_dx", label: "🧪 Lab" },
+            { id: "pharm", label: "💉 Pharm" },
+            { id: "prevention", label: "🛡️ Prevention" },
+            { id: "management", label: "📋 Mgmt" }
+        ];
+
+        var YEARS = [
+            { id: 1, label: "M1" },
+            { id: 2, label: "M2" },
+            { id: 3, label: "M3" },
+            { id: 4, label: "M4" }
+        ];
+
+        var selectedTypes = storage.get('selectedQuestionTypes') || [];
+        var selectedYears = storage.get('selectedYears') || [];
+        var highYieldOnly = storage.get('highYieldOnly') || false;
+
+        var activeCount = selectedTypes.length + selectedYears.length + (highYieldOnly ? 1 : 0);
+
+        var html = '<div class="collapsible-section" style="margin-top:6px">' +
+            '<button class="collapsible-toggle" id="advFilterToggle">🔍 Filters ' +
+            '<span id="activeFilterCount" style="font-size:10px;color:var(--accent-orange)">' + (activeCount > 0 ? '(' + activeCount + ' active)' : '') + '</span>' +
+            ' <span class="collapse-arrow" id="advFilterArrow">▸</span></button>' +
+            '<div class="collapsible-body" id="advFilterBody" style="display:none">' +
+
+            '<label style="font-size:11px;font-weight:700;margin-top:8px;display:block">❓ Question Type</label>' +
+            '<div style="font-size:9px;color:var(--text-muted);margin-bottom:4px">Leave empty for all types</div>' +
+            '<div class="subject-scroll" id="questionTypeScroll">' +
+            QUESTION_TYPES.map(function (qt) {
+                var sel = selectedTypes.indexOf(qt.id) >= 0 ? 'selected' : '';
+                return '<div class="subject-chip ' + sel + '" data-qtype="' + qt.id + '">' + qt.label + '</div>';
+            }).join('') +
+            '</div>' +
+
+            '<label style="font-size:11px;font-weight:700;margin-top:8px;display:block">🎓 Year</label>' +
+            '<div class="subject-scroll" id="yearFilterScroll">' +
+            YEARS.map(function (yr) {
+                var sel = selectedYears.indexOf(yr.id) >= 0 ? 'selected' : '';
+                return '<div class="subject-chip ' + sel + '" data-year="' + yr.id + '">' + yr.label + '</div>';
+            }).join('') +
+            '</div>' +
+
+            '<div class="setting-row" style="padding:8px 0">' +
+            '<div style="font-size:12px">🔥 High-Yield Only</div>' +
+            '<div class="toggle ' + (highYieldOnly ? 'on' : '') + '" id="highYieldToggle"></div>' +
+            '</div>' +
+
+            '<button class="btn btn-outline btn-sm" id="resetFiltersBtn" style="margin-top:4px;font-size:10px">Reset All Filters</button>' +
+
+            '</div></div>';
+
+        container.innerHTML = html;
+
+        var toggle = document.getElementById('advFilterToggle');
+        var body = document.getElementById('advFilterBody');
+        var arrow = document.getElementById('advFilterArrow');
+        if (toggle && body) {
+            toggle.addEventListener('click', function () {
+                var isOpen = body.style.display !== 'none';
+                body.style.display = isOpen ? 'none' : 'block';
+                if (arrow) arrow.classList.toggle('open', !isOpen);
+            });
+        }
+
+        container.querySelectorAll('[data-qtype]').forEach(function (chip) {
+            chip.addEventListener('click', function () {
+                if (storage.toggleQuestionTypeFilter) {
+                    storage.toggleQuestionTypeFilter(chip.dataset.qtype);
+                } else {
+                    storage.toggleArrayItem('selectedQuestionTypes', chip.dataset.qtype);
+                }
+                chip.classList.toggle('selected');
+                self._updateFilterCount();
+            });
+        });
+
+        container.querySelectorAll('[data-year]').forEach(function (chip) {
+            chip.addEventListener('click', function () {
+                var yearNum = parseInt(chip.dataset.year);
+                if (storage.toggleYearFilter) {
+                    storage.toggleYearFilter(yearNum);
+                } else {
+                    storage.toggleArrayItem('selectedYears', yearNum);
+                }
+                chip.classList.toggle('selected');
+                self._updateFilterCount();
+            });
+        });
+
+        var hyToggle = document.getElementById('highYieldToggle');
+        if (hyToggle) {
+            hyToggle.addEventListener('click', function () {
+                var newVal = !storage.get('highYieldOnly');
+                storage.set('highYieldOnly', newVal);
+                hyToggle.classList.toggle('on');
+                self._updateFilterCount();
+            });
+        }
+
+        var resetBtn = document.getElementById('resetFiltersBtn');
+        if (resetBtn) {
+            resetBtn.addEventListener('click', function () {
+                storage.set('selectedQuestionTypes', []);
+                storage.set('selectedYears', []);
+                storage.set('highYieldOnly', false);
+                storage.set('selectedExams', []);
+                self.renderExamFilter();
+                self.renderAdvancedFilters();
+            });
+        }
+    }
+
+    _updateFilterCount() {
+        var selectedTypes = storage.get('selectedQuestionTypes') || [];
+        var selectedYears = storage.get('selectedYears') || [];
+        var highYieldOnly = storage.get('highYieldOnly') || false;
+        var activeCount = selectedTypes.length + selectedYears.length + (highYieldOnly ? 1 : 0);
+        var countEl = document.getElementById('activeFilterCount');
+        if (countEl) {
+            countEl.textContent = activeCount > 0 ? '(' + activeCount + ' active)' : '';
+        }
+    }
     renderSubjects() {
         var selected = storage.get('selectedSubjects');
         var container = document.getElementById('subjectScroll');
@@ -1116,38 +1251,9 @@ class UI {
     renderHowToPlay() {
         var container = document.getElementById('howToPlaySection');
         if (!container) return;
-
-        var sections = [
-            { icon: '🎮', title: 'Controls', content: 'Swipe left/right to change lanes. Swipe up to jump over obstacles. Swipe down to slide under overhead obstacles. On keyboard: Arrow keys to move, Up to jump, Down to slide.' },
-            { icon: '⚡', title: 'Rush Mode', content: 'Double-tap (mobile) or press Shift (keyboard) to Rush! During rush you\'re propelled through the gate in 0.5 seconds and invulnerable to obstacles. Great when you know the answer!' },
-            { icon: '❤️', title: 'Lives & Hearts', content: 'You start with 3 lives. Wrong answers and hitting obstacles cost a life. When at 1 life, look for glowing red heart pickups on the track to gain an extra life!' },
-            { icon: '🪙', title: 'Coins & Power-ups', content: '<b>Shield</b>: Absorbs one hit. <b>Magnet</b>: Attracts nearby coins. <b>2× Score</b>: Double points for 15s. <b>Auto-Pilot</b>: Steers to correct answer for 1 gate. <b>Score Frenzy</b>: 5× coins for 8s.' },
-            { icon: '📊', title: 'Scoring', content: 'Points increase with your streak and multiplier. Every 5 correct answers increases your multiplier (up to 8×). Higher game speed also earns more points per answer.' },
-            { icon: '👹', title: 'The Exam Monster', content: 'Beware! An ominous creature chases you when you miss questions. Each wrong answer brings it closer. Keep your accuracy up or face the consequences!' },
-            { icon: '🎯', title: 'Game Modes', content: '<b>Endless</b>: Run as far as you can. <b>Study</b>: Infinite lives, see teaching points. <b>Weakness</b>: Focus on your missed cards. <b>Daily</b>: 15-question daily challenge. <b>Versus</b>: Compete with a friend!' },
-            { icon: '📝', title: 'Custom Cards', content: 'Create your own flashcards in My Cards. Import/export JSON. Cards appear in gameplay alongside the built-in database.' }
-        ];
-
-        container.innerHTML = '<h3 style="font-size:14px;font-weight:800;color:var(--text-secondary);margin-bottom:8px">📖 How to Play</h3>' +
-            sections.map(function (s, i) {
-                return '<div class="collapsible-section" style="margin-bottom:4px">' +
-                    '<button class="collapsible-toggle htp-toggle" data-htp="' + i + '" style="font-size:12px;padding:8px 12px">' +
-                    s.icon + ' ' + s.title + ' <span class="collapse-arrow htp-arrow-' + i + '">▸</span></button>' +
-                    '<div class="collapsible-body htp-body-' + i + '" style="display:none;padding:6px 12px;font-size:11px;color:var(--text-secondary);line-height:1.5">' + s.content + '</div></div>';
-            }).join('');
-
-        container.querySelectorAll('.htp-toggle').forEach(function (toggle) {
-            toggle.addEventListener('click', function () {
-                var idx = toggle.dataset.htp;
-                var body = container.querySelector('.htp-body-' + idx);
-                var arrow = container.querySelector('.htp-arrow-' + idx);
-                if (body) {
-                    var isOpen = body.style.display !== 'none';
-                    body.style.display = isOpen ? 'none' : 'block';
-                    if (arrow) arrow.classList.toggle('open', !isOpen);
-                }
-            });
-        });
+        // How to Play is now a button in the quick action grid
+        // that calls showTutorial(). This section is kept empty.
+        container.innerHTML = '';
     }
 
     bindCustomCards() {
@@ -1488,19 +1594,30 @@ class UI {
     countdown(callback) {
         var ovl = document.getElementById('countdownOverlay');
         var num = document.getElementById('countdownNum');
+        var tip = document.getElementById('countdownTip');
         ovl.classList.add('active');
         var ct = 3;
         num.textContent = ct;
         audio.play('countdown');
+
+        if (tip) {
+            var isTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+            tip.textContent = isTouch
+                ? '💡 Know the answer? Double-tap to RUSH through! ⚡ Faster = more points'
+                : '💡 Know the answer? Press SHIFT or SPACE to RUSH! ⚡ Faster = more points';
+            tip.style.opacity = '1';
+        }
+
         var iv = setInterval(function () {
             ct--;
             if (ct > 0) { num.textContent = ct; audio.play('countdown'); }
             else {
                 clearInterval(iv);
                 num.textContent = 'GO!';
+                if (tip) tip.style.opacity = '0';
                 setTimeout(function () { ovl.classList.remove('active'); callback(); }, 500);
             }
-        }, 1000); // CHANGED from 500 to 1000
+        }, 1000);
     }
 
     showPostRun(game) {
