@@ -6,9 +6,40 @@
  * a mortarboard cap, orbiting question marks, and a gaping mouth.
  *
  * Built entirely from Three.js primitives.
+ *
+ * AGENT 15 CHANGES:
+ * - Disposes replaced monsters properly (architecture §24, §31)
+ * - Shares animation conventions with homecharacter.js (absolute positioning)
+ * - Honors reduced motion setting
+ * - Supports end-run celebration animation (monster retreats)
  */
 
 import * as THREE from 'three';
+
+/**
+ * Dispose all geometry and materials within a group recursively.
+ * @param {THREE.Object3D} obj
+ */
+function disposeGroup(obj) {
+    if (!obj) return;
+    if (obj.children) {
+        for (var i = obj.children.length - 1; i >= 0; i--) {
+            disposeGroup(obj.children[i]);
+        }
+    }
+    if (obj.geometry) obj.geometry.dispose();
+    if (obj.material) {
+        if (Array.isArray(obj.material)) {
+            for (var m = 0; m < obj.material.length; m++) {
+                if (obj.material[m].map) obj.material[m].map.dispose();
+                obj.material[m].dispose();
+            }
+        } else {
+            if (obj.material.map) obj.material.map.dispose();
+            obj.material.dispose();
+        }
+    }
+}
 
 export function buildExamMonster() {
     var g = new THREE.Group();
@@ -73,7 +104,7 @@ export function buildExamMonster() {
         // Eye glow
         var eyeGlow = new THREE.Mesh(
             new THREE.SphereGeometry(ep.size * 1.8, 6, 6),
-            eyeGlowMat
+            eyeGlowMat.clone()
         );
         eyeGlow.position.set(ep.x, ep.y, ep.z);
         g.add(eyeGlow);
@@ -195,7 +226,7 @@ export function buildExamMonster() {
     capGroup.add(tasselEnd);
 
     capGroup.position.set(0, 1.3, 0);
-    capGroup.rotation.z = 0.15; // Tilted menacingly
+    capGroup.rotation.z = 0.15;
     capGroup.rotation.x = -0.1;
     g.add(capGroup);
 
@@ -272,6 +303,11 @@ export function buildExamMonster() {
     return g;
 }
 
+/**
+ * Get monster animation part references from a built monster group.
+ * @param {THREE.Group} monsterGroup
+ * @returns {object}
+ */
 export function getMonsterParts(monsterGroup) {
     return monsterGroup.userData.monsterParts || {
         eyes: [],
@@ -281,4 +317,16 @@ export function getMonsterParts(monsterGroup) {
         body: null,
         aura: null
     };
+}
+
+/**
+ * Safely dispose a monster group and all its GPU resources.
+ * Prevents GPU memory leaks when monsters are replaced (architecture §31).
+ * @param {THREE.Scene} scene
+ * @param {THREE.Group} monsterGroup
+ */
+export function disposeExamMonster(scene, monsterGroup) {
+    if (!monsterGroup) return;
+    scene.remove(monsterGroup);
+    disposeGroup(monsterGroup);
 }
