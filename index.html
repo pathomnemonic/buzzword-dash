@@ -1,410 +1,435 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover">
-<title>Buzzword Dash — USMLE & COMLEX Board Runner</title>
-<link rel="stylesheet" href="css/style.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="description" content="Buzzword Dash — A 3D endless-runner game for USMLE and COMLEX board prep. Recognize medical buzzwords, choose the correct diagnosis lane, and build your streak.">
+  <title>Buzzword Dash — USMLE &amp; COMLEX Board Runner</title>
+  <link rel="stylesheet" href="css/style.css">
 
-<script type="importmap">
-{
-  "imports": {
-    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
   }
-}
-</script>
+  </script>
 </head>
 <body>
 
-<!-- ==================== 3D CANVAS (fullscreen, always behind UI) ==================== -->
-<div id="gameContainer"></div>
+  <!-- ==================== 3D CANVAS (fullscreen, always behind UI) ==================== -->
+  <div id="gameContainer" role="presentation" aria-hidden="true"></div>
 
-<!-- ==================== RUSH VIGNETTE ==================== -->
-<div id="rushVignette" class="rush-vignette"></div>
+  <!-- ==================== RUSH VIGNETTE ==================== -->
+  <div id="rushVignette" class="rush-vignette" aria-hidden="true"></div>
 
-<!-- ==================== TRACK NAME OVERLAY ==================== -->
-<div id="trackNameOverlay">
-  <div id="trackNameText"></div>
-</div>
-
-<!-- ==================== REVENGE CARD BANNER ==================== -->
-<div id="revengeCardBanner">🔥 REVENGE CARD!</div>
-
-<!-- ==================== HUD (gameplay only) ==================== -->
-<div id="hud" class="off">
-  <div class="hud-row">
-    <div class="hud-pill">🪙 <span id="hudCoins">0</span></div>
-    <div class="hud-pill">⭐ <span id="hudScore">0</span></div>
-    <div class="hud-pill">🔥 <span id="hudStreak">0</span></div>
-    <div class="hud-pill">× <span id="hudMulti">1</span></div>
-    <div class="hud-pill">❤️ <span id="hudLives">3</span></div>
-    <div class="hud-pill" id="hudSpeedTimer" style="display:none">⏱ 0.00s</div>
-    <div class="hud-pill clickable" id="pauseBtn">⏸</div>
+  <!-- ==================== TRACK NAME OVERLAY ==================== -->
+  <div id="trackNameOverlay" role="status" aria-live="polite">
+    <div id="trackNameText"></div>
   </div>
-  <!-- OPPONENT HUD (multiplayer only, hidden by default) -->
-  <div id="opponentHud" class="opponent-hud" style="display:none">
-    <span>🎮 Rival</span>
-    <span>⭐ <b id="opponentScore">0</b></span>
-    <span>🔥 <b id="opponentStreak">0</b></span>
-    <span>✅ <b id="opponentCorrect">0</b></span>
-    <span>❌ <b id="opponentWrong">0</b></span>
-  </div>
-  <div id="buzzBox"><div id="buzzText">GET READY</div></div>
-  <div id="answerRow">
-    <div class="answer-choice" id="ans0"><span class="lane-label">← LEFT</span><span id="ansText0"></span></div>
-    <div class="answer-choice" id="ans1"><span class="lane-label">CENTER</span><span id="ansText1"></span></div>
-    <div class="answer-choice" id="ans2"><span class="lane-label">RIGHT →</span><span id="ansText2"></span></div>
-  </div>
-  <div id="feedbackEl"></div>
-  <div id="rushEl">⚡ RUSH ×1 ⚡</div>
-  <div id="teachEl"></div>
-  <div class="powerup-row" id="powerupRow"></div>
-</div>
 
-<!-- ==================== COUNTDOWN ==================== -->
-<div id="countdownOverlay"><div id="countdownNum">3</div><div id="countdownTip" style="position:absolute;bottom:15%;left:50%;transform:translateX(-50%);max-width:300px;text-align:center;font-size:13px;font-weight:700;color:var(--accent-orange);background:rgba(10,5,30,0.8);padding:10px 18px;border-radius:12px;border:1px solid rgba(255,136,0,0.3);opacity:0;transition:opacity 0.3s"></div></div>
+  <!-- ==================== REVENGE CARD BANNER ==================== -->
+  <div id="revengeCardBanner" role="status" aria-live="polite">🔥 REVENGE CARD!</div>
 
-<!-- ==================== PAUSE ==================== -->
-<div id="pauseOverlay">
-  <h2>⏸ PAUSED</h2>
-  <button class="btn btn-primary btn-block" id="resumeBtn">▶ Resume</button>
-  <button class="btn btn-outline btn-block" id="endRunBtn">🏠 End Run</button>
-</div>
-
-<!-- ==================== CONTINUE ==================== -->
-<div id="continueOverlay">
-  <div class="continue-box">
-    <h2>💀 Out of Lives!</h2>
-    <p class="continue-desc">Continue your run?</p>
-    <div class="continue-cost-row">
-      <span class="continue-cost-label">Cost:</span>
-      <span class="continue-cost-amount">🪙 <span id="continueCost">50</span></span>
-    </div>
-    <div class="continue-cost-row">
-      <span class="continue-cost-label">Your coins:</span>
-      <span class="continue-coins-amount">🪙 <span id="continueCoins">0</span></span>
-    </div>
-    <button class="btn btn-green btn-block" id="continueYesBtn">💚 Continue!</button>
-    <button class="btn btn-outline btn-block" id="continueNoBtn" style="margin-top:6px">End Run</button>
-  </div>
-</div>
-
-<!-- ==================== ONBOARDING (first run only) ==================== -->
-<div id="onboardingOverlay">
-  <div class="onboarding-card" id="onboardingCard">
-    <span class="ob-icon" id="obIcon">⚡</span>
-    <h2 id="obTitle">Welcome to Buzzword Dash!</h2>
-    <p id="obText">Swipe into the correct diagnosis gate to score points!</p>
-    <div class="onboarding-hand" id="obHand">👆</div>
-    <div class="tut-dots" id="obDots"></div>
-    <button class="btn btn-primary" id="obNextBtn" style="margin-top:12px">Next →</button>
-  </div>
-</div>
-
-<!-- ==================== TUTORIAL ==================== -->
-<div class="tutorial-overlay" id="tutorialOverlay">
-  <div class="tut-page" id="tutPage"></div>
-  <div class="tut-dots" id="tutDots"></div>
-  <div class="tut-buttons">
-    <button class="btn btn-outline btn-sm" id="tutCloseBtn">✕ Close</button>
-    <button class="btn btn-primary" id="tutNextBtn">Next →</button>
-  </div>
-</div>
-
-<!-- ==================== QUICK REVIEW ==================== -->
-<div id="quickReviewOverlay">
-  <div class="quick-review-card">
-    <div class="qr-counter" id="qrCounter">1 / 5</div>
-    <div class="qr-buzzwords" id="qrBuzzwords"></div>
-    <div class="qr-divider" id="qrDivider" style="display:none">
-      <div class="qr-answer" id="qrAnswer"></div>
-      <div class="qr-teaching" id="qrTeaching"></div>
-    </div>
-    <div style="display:flex;gap:8px;margin-top:14px">
-      <button class="btn btn-primary" id="qrRevealBtn" style="flex:1">Reveal Answer</button>
-      <button class="btn btn-outline" id="qrNextBtn" style="flex:1;display:none">Next Card →</button>
-    </div>
-    <button class="btn btn-outline btn-block" id="qrCloseBtn" style="margin-top:8px">✕ Close Review</button>
-  </div>
-</div>
-
-<!-- ==================== MULTIPLAYER ==================== -->
-<div id="multiplayerOverlay" style="display:none">
-  <div class="mp-panel" style="max-width:380px;width:100%">
-    <h3 id="mpTitle">🎮 Multiplayer</h3>
-    <div id="mpContent"></div>
-    <button class="btn btn-outline btn-block" id="mpCloseBtn" style="margin-top:10px">✕ Close</button>
-  </div>
-</div>
-
-<!-- ====================================================================
-     SCREENS — All transparent, floating over the 3D canvas.
-     Bottom nav is OUTSIDE all screens so it persists everywhere.
-     ==================================================================== -->
-
-<!-- ==================== HOME ==================== -->
-<div class="screen active" id="screenHome">
-  <div class="screen-scroll">
-
-    <!-- Header with inline coin count -->
-    <div class="home-header">
-      <h1>⚡ Buzzword Dash</h1>
-      <p>USMLE & COMLEX Board Runner</p>
-      <div class="home-coins" id="homeCoinsDisplay">🪙 <span id="homeCoins">100</span> &nbsp;|&nbsp; 🏆 <span id="homeBest">0</span></div>
+  <!-- ==================== HUD (gameplay only) ==================== -->
+  <div id="hud" class="off" role="region" aria-label="Game heads-up display">
+    <div class="hud-row">
+      <div class="hud-pill" aria-label="Coins"><span aria-hidden="true">🪙</span> <span id="hudCoins">0</span></div>
+      <div class="hud-pill" aria-label="Score"><span aria-hidden="true">⭐</span> <span id="hudScore">0</span></div>
+      <div class="hud-pill" aria-label="Streak"><span aria-hidden="true">🔥</span> <span id="hudStreak">0</span></div>
+      <div class="hud-pill" aria-label="Multiplier"><span aria-hidden="true">×</span> <span id="hudMulti">1</span></div>
+      <div class="hud-pill" aria-label="Lives"><span aria-hidden="true">❤️</span> <span id="hudLives">3</span></div>
+      <div class="hud-pill" id="hudSpeedTimer" aria-label="Speed timer">⏱ 0.00s</div>
+      <button class="hud-pill clickable" id="pauseBtn" type="button" aria-label="Pause game">⏸</button>
     </div>
 
-    <!-- ===== PRIMARY ACTION: Giant PLAY button ===== -->
-    <div class="play-section">
-      <button class="btn-play" data-mode="endless">
-        <span class="play-icon">▶</span>
-        <span class="play-label">PLAY</span>
-      </button>
+    <!-- OPPONENT HUD (multiplayer only, hidden by default) -->
+    <div id="opponentHud" class="opponent-hud" aria-label="Opponent stats" hidden>
+      <span>🎮 Rival</span>
+      <span><span aria-hidden="true">⭐</span> <b id="opponentScore">0</b></span>
+      <span><span aria-hidden="true">🔥</span> <b id="opponentStreak">0</b></span>
+      <span><span aria-hidden="true">✅</span> <b id="opponentCorrect">0</b></span>
+      <span><span aria-hidden="true">❌</span> <b id="opponentWrong">0</b></span>
     </div>
 
-    <!-- ===== SECONDARY MODES: smaller row ===== -->
-    <div class="mode-row">
-      <button class="mode-btn" data-mode="study">
-        <span class="mode-btn-icon">📖</span>
-        <span class="mode-btn-label">Study</span>
-      </button>
-      <button class="mode-btn" data-mode="weakness">
-        <span class="mode-btn-icon">🎯</span>
-        <span class="mode-btn-label">Weakness</span>
-      </button>
-      <button class="mode-btn" data-mode="daily">
-        <span class="mode-btn-icon">📅</span>
-        <span class="mode-btn-label">Daily</span>
-      </button>
-      <button class="mode-btn" id="multiplayerBtn">
-        <span class="mode-btn-icon">🎮</span>
-        <span class="mode-btn-label">Versus</span>
-      </button>
+    <div id="buzzBox" role="status" aria-live="assertive" aria-atomic="true">
+      <div id="buzzText">GET READY</div>
     </div>
 
-    <!-- ===== SUBJECTS: collapsed by default ===== -->
-    <div class="collapsible-section">
-      <button class="collapsible-toggle" id="subjectToggle">
-        📚 Subjects <span class="collapse-arrow" id="subjectArrow">▸</span>
-      </button>
-      <div class="collapsible-body" id="subjectBody" style="display:none">
-        <div class="subject-controls">
-          <button class="btn btn-outline btn-sm" id="selectAllSubjects">Select All</button>
-          <button class="btn btn-outline btn-sm" id="deselectAllSubjects">Deselect All</button>
+    <div id="answerRow" role="group" aria-label="Answer choices">
+      <div class="answer-choice" id="ans0">
+        <span class="lane-label">← LEFT</span>
+        <span id="ansText0"></span>
+      </div>
+      <div class="answer-choice" id="ans1">
+        <span class="lane-label">CENTER</span>
+        <span id="ansText1"></span>
+      </div>
+      <div class="answer-choice" id="ans2">
+        <span class="lane-label">RIGHT →</span>
+        <span id="ansText2"></span>
+      </div>
+    </div>
+
+    <div id="feedbackEl" role="status" aria-live="polite"></div>
+    <div id="rushEl" aria-hidden="true">⚡ RUSH ×1 ⚡</div>
+    <div id="teachEl" role="status" aria-live="polite"></div>
+    <div class="powerup-row" id="powerupRow" aria-label="Active power-ups"></div>
+  </div>
+
+  <!-- ==================== COUNTDOWN ==================== -->
+  <div id="countdownOverlay" role="alert" aria-live="assertive">
+    <div id="countdownNum">3</div>
+    <div id="countdownTip"></div>
+  </div>
+
+  <!-- ==================== PAUSE ==================== -->
+  <div id="pauseOverlay" role="dialog" aria-label="Game paused" aria-modal="true">
+    <h2>⏸ PAUSED</h2>
+    <button class="btn btn-primary btn-block" id="resumeBtn" type="button">▶ Resume</button>
+    <button class="btn btn-outline btn-block" id="endRunBtn" type="button">🏠 End Run</button>
+  </div>
+
+  <!-- ==================== CONTINUE ==================== -->
+  <div id="continueOverlay" role="dialog" aria-label="Continue prompt" aria-modal="true">
+    <div class="continue-box">
+      <h2>💀 Out of Lives!</h2>
+      <p class="continue-desc">Continue your run?</p>
+      <div class="continue-cost-row">
+        <span class="continue-cost-label">Cost:</span>
+        <span class="continue-cost-amount">🪙 <span id="continueCost">50</span></span>
+      </div>
+      <div class="continue-cost-row">
+        <span class="continue-cost-label">Your coins:</span>
+        <span class="continue-coins-amount">🪙 <span id="continueCoins">0</span></span>
+      </div>
+      <button class="btn btn-green btn-block" id="continueYesBtn" type="button">💚 Continue!</button>
+      <button class="btn btn-outline btn-block" id="continueNoBtn" type="button">End Run</button>
+    </div>
+  </div>
+
+  <!-- ==================== ONBOARDING (first run only) ==================== -->
+  <div id="onboardingOverlay" role="dialog" aria-label="Welcome tutorial" aria-modal="true">
+    <div class="onboarding-card" id="onboardingCard">
+      <span class="ob-icon" id="obIcon" aria-hidden="true">⚡</span>
+      <h2 id="obTitle">Welcome to Buzzword Dash!</h2>
+      <p id="obText">Swipe into the correct diagnosis gate to score points!</p>
+      <div class="onboarding-hand" id="obHand" aria-hidden="true">👆</div>
+      <div class="tut-dots" id="obDots" role="tablist" aria-label="Tutorial progress"></div>
+      <button class="btn btn-primary" id="obNextBtn" type="button">Next →</button>
+    </div>
+  </div>
+
+  <!-- ==================== TUTORIAL ==================== -->
+  <div class="tutorial-overlay" id="tutorialOverlay" role="dialog" aria-label="How to play" aria-modal="true">
+    <div class="tut-page" id="tutPage"></div>
+    <div class="tut-dots" id="tutDots" role="tablist" aria-label="Tutorial progress"></div>
+    <div class="tut-buttons">
+      <button class="btn btn-outline btn-sm" id="tutCloseBtn" type="button">✕ Close</button>
+      <button class="btn btn-primary" id="tutNextBtn" type="button">Next →</button>
+    </div>
+  </div>
+
+  <!-- ==================== QUICK REVIEW ==================== -->
+  <div id="quickReviewOverlay" role="dialog" aria-label="Quick review" aria-modal="true">
+    <div class="quick-review-card">
+      <div class="qr-counter" id="qrCounter">1 / 5</div>
+      <div class="qr-buzzwords" id="qrBuzzwords"></div>
+      <div class="qr-divider" id="qrDivider" hidden>
+        <div class="qr-answer" id="qrAnswer"></div>
+        <div class="qr-teaching" id="qrTeaching"></div>
+      </div>
+      <div class="qr-buttons">
+        <button class="btn btn-primary" id="qrRevealBtn" type="button">Reveal Answer</button>
+        <button class="btn btn-outline" id="qrNextBtn" type="button" hidden>Next Card →</button>
+      </div>
+      <button class="btn btn-outline btn-block" id="qrCloseBtn" type="button">✕ Close Review</button>
+    </div>
+  </div>
+
+  <!-- ==================== MULTIPLAYER ==================== -->
+  <div id="multiplayerOverlay" role="dialog" aria-label="Multiplayer lobby" aria-modal="true">
+    <div class="mp-panel">
+      <h3 id="mpTitle">🎮 Multiplayer</h3>
+      <div id="mpContent"></div>
+      <button class="btn btn-outline btn-block" id="mpCloseBtn" type="button">✕ Close</button>
+    </div>
+  </div>
+
+  <!-- ====================================================================
+       SCREENS — All transparent, floating over the 3D canvas.
+       Bottom nav is OUTSIDE all screens so it persists everywhere.
+  ==================================================================== -->
+
+  <!-- ==================== HOME ==================== -->
+  <div class="screen active" id="screenHome" role="region" aria-label="Home">
+    <div class="screen-scroll">
+
+      <header class="home-header">
+        <h1>⚡ Buzzword Dash</h1>
+        <p>USMLE &amp; COMLEX Board Runner</p>
+        <div class="home-coins" id="homeCoinsDisplay" aria-label="Your coins and best score">
+          <span aria-hidden="true">🪙</span> <span id="homeCoins">100</span>
+          &nbsp;|&nbsp;
+          <span aria-hidden="true">🏆</span> <span id="homeBest">0</span>
         </div>
-        <div class="subject-scroll" id="subjectScroll"></div>
-        <!-- NEW: Subject note for empty selection -->
-        <div id="subjectNote" style="display:none;font-size:10px;color:var(--text-muted);text-align:center;margin-top:4px"></div>
+      </header>
+
+      <!-- PRIMARY ACTION: Giant PLAY button -->
+      <div class="play-section">
+        <button class="btn-play" data-mode="endless" type="button" aria-label="Play endless mode">
+          <span class="play-icon" aria-hidden="true">▶</span>
+          <span class="play-label">PLAY</span>
+        </button>
+      </div>
+
+      <!-- SECONDARY MODES -->
+      <div class="mode-row" role="group" aria-label="Game modes">
+        <button class="mode-btn" data-mode="study" type="button">
+          <span class="mode-btn-icon" aria-hidden="true">📖</span>
+          <span class="mode-btn-label">Study</span>
+        </button>
+        <button class="mode-btn" data-mode="weakness" type="button">
+          <span class="mode-btn-icon" aria-hidden="true">🎯</span>
+          <span class="mode-btn-label">Weakness</span>
+        </button>
+        <button class="mode-btn" data-mode="daily" type="button">
+          <span class="mode-btn-icon" aria-hidden="true">📅</span>
+          <span class="mode-btn-label">Daily</span>
+        </button>
+        <button class="mode-btn" id="multiplayerBtn" type="button">
+          <span class="mode-btn-icon" aria-hidden="true">🎮</span>
+          <span class="mode-btn-label">Versus</span>
+        </button>
+      </div>
+
+      <!-- SUBJECTS: collapsed by default -->
+      <div class="collapsible-section">
+        <button class="collapsible-toggle" id="subjectToggle" type="button" aria-expanded="false" aria-controls="subjectBody">
+          📚 Subjects <span class="collapse-arrow" id="subjectArrow" aria-hidden="true">▸</span>
+        </button>
+        <div class="collapsible-body" id="subjectBody" hidden>
+          <div class="subject-controls">
+            <button class="btn btn-outline btn-sm" id="selectAllSubjects" type="button">Select All</button>
+            <button class="btn btn-outline btn-sm" id="deselectAllSubjects" type="button">Deselect All</button>
+          </div>
+          <div class="subject-scroll" id="subjectScroll" role="group" aria-label="Subject selection"></div>
+          <div id="subjectNote" hidden></div>
+        </div>
+      </div>
+
+      <!-- Exam Filter -->
+      <div id="examFilterContainer"></div>
+      <!-- Advanced Filters -->
+      <div id="advancedFilterContainer"></div>
+
+      <!-- SPEED DIAL -->
+      <div class="speed-dial">
+        <label for="speedDial">🏎️ Speed</label>
+        <input type="range" id="speedDial" min="1" max="10" step="1" value="1" aria-label="Game speed">
+        <div class="speed-value" id="speedValue" aria-live="polite">1×</div>
+      </div>
+
+      <!-- UTILITY BUTTONS -->
+      <div class="btn-row">
+        <button class="btn btn-gold btn-sm" id="shopBtn" type="button">🧥 Locker</button>
+        <button class="btn btn-outline btn-sm" id="questBtn" type="button">📋 Quests</button>
+        <button class="btn btn-outline btn-sm" id="myCardsBtn" type="button">📝 My Cards</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-outline btn-sm" id="achievementsBtn" type="button">🏆 Badges</button>
+        <button class="btn btn-outline btn-sm" id="settingsBtn" type="button">⚙ Settings</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-outline btn-sm" id="flashcardBtn" type="button">📖 Flashcards</button>
+        <button class="btn btn-outline btn-sm" id="cardBrowserBtn" type="button">📚 Browse Cards</button>
+        <button class="btn btn-outline btn-sm" id="profileBtn" type="button">👤 Profile</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-outline btn-sm" id="leaderboardBtn" type="button">🏆 Leaderboard</button>
+      </div>
+
+      <!-- How to Play Section -->
+      <div id="howToPlaySection"></div>
+
+      <!-- Study Streak Calendar -->
+      <div class="streak-calendar" id="streakCalendar">
+        <h4>📅 Study Streak</h4>
+        <div class="calendar-day-labels" aria-hidden="true">
+          <span>S</span><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span>
+        </div>
+        <div class="calendar-grid" id="calendarGrid" role="img" aria-label="Study streak calendar"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ==================== STATS ==================== -->
+  <div class="screen" id="screenStats" role="region" aria-label="Performance statistics">
+    <div class="screen-scroll">
+      <h2>📊 Performance</h2>
+      <div id="statsContent"></div>
+    </div>
+  </div>
+
+  <!-- ==================== SHOP ==================== -->
+  <div class="screen" id="screenShop" role="region" aria-label="On-Call Locker">
+    <div class="screen-scroll">
+      <h2>🧥 On-Call Locker</h2>
+      <p class="muted">Coins: <span id="shopCoins" class="gold bold">0</span></p>
+      <div id="characterPreviewContainer" role="img" aria-label="Character preview"></div>
+      <p class="muted">Drag to rotate • Tap 👁 to try on</p>
+      <div id="shopItems"></div>
+    </div>
+  </div>
+
+  <!-- ==================== QUESTS ==================== -->
+  <div class="screen" id="screenQuests" role="region" aria-label="Daily Quests">
+    <div class="screen-scroll">
+      <h2>📋 Daily Quests</h2>
+      <div id="questList"></div>
+    </div>
+  </div>
+
+  <!-- ==================== ACHIEVEMENTS ==================== -->
+  <div class="screen" id="screenAchievements" role="region" aria-label="Achievements">
+    <div class="screen-scroll">
+      <h2>🏆 Achievements</h2>
+      <div id="achievementsList"></div>
+    </div>
+  </div>
+
+  <!-- ==================== SETTINGS ==================== -->
+  <div class="screen" id="screenSettings" role="region" aria-label="Settings">
+    <div class="screen-scroll">
+      <h2>⚙ Settings</h2>
+      <div id="settingsContent"></div>
+    </div>
+  </div>
+
+  <!-- ==================== MY CARDS ==================== -->
+  <div class="screen" id="screenMyCards" role="region" aria-label="My Cards">
+    <div class="screen-scroll">
+      <h2>📝 My Cards</h2>
+      <p class="muted">Create your own flashcards to add to the game.</p>
+      <button class="btn btn-green btn-block" id="addCardBtn" type="button">+ Create New Card</button>
+      <div id="customCardList"></div>
+      <div class="btn-row">
+        <button class="btn btn-outline btn-sm" id="exportCardsBtn" type="button">📤 Export</button>
+        <button class="btn btn-outline btn-sm" id="importCardsBtn" type="button">📥 Import</button>
       </div>
     </div>
+  </div>
 
-    <!-- NEW: Exam Filter -->
-    <div id="examFilterContainer"></div>
-    <!-- NEW: Advanced Filters (question type, year, high-yield) -->
-    <div id="advancedFilterContainer"></div>
+  <!-- ==================== CARD EDITOR ==================== -->
+  <div class="screen" id="screenCardEditor" role="region" aria-label="Card Editor">
+    <div class="screen-scroll">
+      <h2 id="cardEditorTitle">📝 Create Card</h2>
+      <div class="card-form">
+        <label for="cardSubject">Subject</label>
+        <select id="cardSubject"></select>
 
-    <!-- ===== SPEED DIAL ===== -->
-    <div class="speed-dial">
-      <label>🏎️ Speed</label>
-      <input type="range" id="speedDial" min="1" max="10" step="1" value="1">
-      <div class="speed-value" id="speedValue">1×</div>
-    </div>
+        <label for="cardBuzzwords">Buzzwords (one per line, 1–4 lines)</label>
+        <textarea id="cardBuzzwords" rows="4" placeholder="e.g.&#10;Young woman&#10;Butterfly rash&#10;Joint pain"></textarea>
 
+        <label for="cardAnswer">Correct Diagnosis</label>
+        <input id="cardAnswer" type="text" placeholder="e.g. Systemic Lupus Erythematosus">
 
+        <label for="cardDistractor1">Wrong Answer 1</label>
+        <input id="cardDistractor1" type="text" placeholder="e.g. Rheumatoid Arthritis">
+        <input id="cardWhy1" type="text" placeholder="Why it's wrong (optional)" class="why-input">
 
-    <!-- ===== UTILITY BUTTONS ===== -->
-    <div style="display:flex;gap:6px;margin-top:10px">
-      <button class="btn btn-gold btn-sm" id="shopBtn" style="flex:1">🧥 Locker</button>
-      <button class="btn btn-outline btn-sm" id="questBtn" style="flex:1">📋 Quests</button>
-      <button class="btn btn-outline btn-sm" id="myCardsBtn" style="flex:1">📝 My Cards</button>
-    </div>
-    <div style="display:flex;gap:6px;margin-top:6px">
-      <button class="btn btn-outline btn-sm" id="achievementsBtn" style="flex:1">🏆 Badges</button>
-      <button class="btn btn-outline btn-sm" id="settingsBtn" style="flex:1">⚙ Settings</button>
-    </div>
+        <label for="cardDistractor2">Wrong Answer 2</label>
+        <input id="cardDistractor2" type="text" placeholder="e.g. Dermatomyositis">
+        <input id="cardWhy2" type="text" placeholder="Why it's wrong (optional)" class="why-input">
 
-    <!-- NEW: Extra buttons row for flashcards, card browser, profile -->
-    <div style="display:flex;gap:6px;margin-top:6px">
-      <button class="btn btn-outline btn-sm" id="flashcardBtn" style="flex:1">📖 Flashcards</button>
-      <button class="btn btn-outline btn-sm" id="cardBrowserBtn" style="flex:1">📚 Browse Cards</button>
-      <button class="btn btn-outline btn-sm" id="profileBtn" style="flex:1">👤 Profile</button>
-    </div>
+        <label for="cardTeaching">Teaching Point</label>
+        <textarea id="cardTeaching" rows="3" placeholder="Brief explanation of why the correct answer is right..."></textarea>
 
-    <!-- ADDITION 1: Leaderboard button row -->
-    <div style="display:flex;gap:6px;margin-top:6px">
-      <button class="btn btn-outline btn-sm" id="leaderboardBtn" style="flex:1">🏆 Leaderboard</button>
-    </div>
+        <div id="cardErrors" role="alert" aria-live="polite"></div>
 
-    <!-- NEW: How to Play Section -->
-    <div id="howToPlaySection" style="margin-top:14px"></div>
-    <!-- ===== STUDY STREAK CALENDAR — AT THE VERY BOTTOM ===== -->
-    <div class="streak-calendar" id="streakCalendar" style="margin-top:16px">
-      <h4>📅 Study Streak</h4>
-      <div class="calendar-day-labels">
-        <span>S</span><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span>
+        <input type="hidden" id="cardEditId" value="">
+        <button class="btn btn-green btn-block" id="saveCardBtn" type="button">💾 Save Card</button>
+        <button class="btn btn-outline btn-block" id="cancelCardBtn" type="button">Cancel</button>
       </div>
-      <div class="calendar-grid" id="calendarGrid"></div>
-    </div>
-
-  </div>
-</div>
-
-<!-- ==================== STATS ==================== -->
-<div class="screen" id="screenStats">
-  <div class="screen-scroll">
-    <h2 style="margin-bottom:14px">📊 Performance</h2>
-    <div id="statsContent"></div>
-  </div>
-</div>
-
-<!-- ==================== SHOP (with character preview) ==================== -->
-<div class="screen" id="screenShop">
-  <div class="screen-scroll">
-    <h2 style="margin-bottom:4px">🧥 On-Call Locker</h2>
-    <p class="muted">Coins: <span id="shopCoins" class="gold bold">0</span></p>
-    <div id="characterPreviewContainer"></div>
-    <p style="font-size:10px;color:var(--text-muted);text-align:center;margin-bottom:10px">Drag to rotate • Tap 👁 to try on</p>
-    <div id="shopItems"></div>
-  </div>
-</div>
-
-<!-- ==================== QUESTS ==================== -->
-<div class="screen" id="screenQuests">
-  <div class="screen-scroll">
-    <h2 style="margin-bottom:14px">📋 Daily Quests</h2>
-    <div id="questList"></div>
-  </div>
-</div>
-
-<!-- ==================== ACHIEVEMENTS ==================== -->
-<div class="screen" id="screenAchievements">
-  <div class="screen-scroll">
-    <h2 style="margin-bottom:14px">🏆 Achievements</h2>
-    <div id="achievementsList"></div>
-  </div>
-</div>
-
-<!-- ==================== SETTINGS ==================== -->
-<div class="screen" id="screenSettings">
-  <div class="screen-scroll">
-    <h2 style="margin-bottom:14px">⚙ Settings</h2>
-    <div id="settingsContent"></div>
-  </div>
-</div>
-
-<!-- ==================== MY CARDS ==================== -->
-<div class="screen" id="screenMyCards">
-  <div class="screen-scroll">
-    <h2 style="margin-bottom:4px">📝 My Cards</h2>
-    <p class="muted">Create your own flashcards to add to the game.</p>
-    <button class="btn btn-green btn-block" id="addCardBtn" style="margin-bottom:12px">+ Create New Card</button>
-    <div id="customCardList"></div>
-    <div style="margin-top:14px;display:flex;gap:6px">
-      <button class="btn btn-outline btn-sm" id="exportCardsBtn" style="flex:1">📤 Export</button>
-      <button class="btn btn-outline btn-sm" id="importCardsBtn" style="flex:1">📥 Import</button>
     </div>
   </div>
-</div>
 
-<!-- ==================== CARD EDITOR ==================== -->
-<div class="screen" id="screenCardEditor">
-  <div class="screen-scroll">
-    <h2 id="cardEditorTitle" style="margin-bottom:14px">📝 Create Card</h2>
-    <div class="card-form">
-      <label>Subject</label>
-      <select id="cardSubject"></select>
-
-      <label>Buzzwords (one per line, 1-4 lines)</label>
-      <textarea id="cardBuzzwords" rows="4" placeholder="e.g.&#10;Young woman&#10;Butterfly rash&#10;Joint pain"></textarea>
-
-      <label>Correct Diagnosis</label>
-      <input id="cardAnswer" type="text" placeholder="e.g. Systemic Lupus Erythematosus">
-
-      <label>Wrong Answer 1</label>
-      <input id="cardDistractor1" type="text" placeholder="e.g. Rheumatoid Arthritis">
-      <input id="cardWhy1" type="text" placeholder="Why it's wrong (optional)" class="why-input">
-
-      <label>Wrong Answer 2</label>
-      <input id="cardDistractor2" type="text" placeholder="e.g. Dermatomyositis">
-      <input id="cardWhy2" type="text" placeholder="Why it's wrong (optional)" class="why-input">
-
-      <label>Teaching Point</label>
-      <textarea id="cardTeaching" rows="3" placeholder="Brief explanation of why the correct answer is right..."></textarea>
-
-      <div id="cardErrors" style="color:var(--accent-red);font-size:12px;margin-bottom:8px"></div>
-
-      <input type="hidden" id="cardEditId" value="">
-      <button class="btn btn-green btn-block" id="saveCardBtn">💾 Save Card</button>
-      <button class="btn btn-outline btn-block" id="cancelCardBtn" style="margin-top:6px">Cancel</button>
+  <!-- ==================== IMPORT/EXPORT ==================== -->
+  <div class="screen" id="screenImportExport" role="region" aria-label="Import or Export Cards">
+    <div class="screen-scroll">
+      <h2 id="importExportTitle">📤 Export Cards</h2>
+      <label for="importExportArea" class="sr-only">Card data</label>
+      <textarea id="importExportArea" rows="12" class="import-export-area"></textarea>
+      <div id="importExportMsg" role="status" aria-live="polite"></div>
+      <button class="btn btn-primary btn-block" id="importExportAction" type="button">Copy</button>
     </div>
   </div>
-</div>
 
-<!-- ==================== IMPORT/EXPORT ==================== -->
-<div class="screen" id="screenImportExport">
-  <div class="screen-scroll">
-    <h2 id="importExportTitle" style="margin-bottom:14px">📤 Export Cards</h2>
-    <textarea id="importExportArea" rows="12" class="import-export-area"></textarea>
-    <div id="importExportMsg" style="font-size:12px;margin:8px 0"></div>
-    <button class="btn btn-primary btn-block" id="importExportAction" style="margin-top:8px">Copy</button>
+  <!-- ==================== POST-RUN ==================== -->
+  <div class="screen" id="screenPostRun" role="region" aria-label="Run results">
+    <div class="screen-scroll">
+      <div id="postRunContent"></div>
+    </div>
   </div>
-</div>
 
-<!-- ==================== POST-RUN ==================== -->
-<div class="screen" id="screenPostRun">
-  <div class="screen-scroll">
-    <div id="postRunContent"></div>
+  <!-- ==================== PROFILE ==================== -->
+  <div class="screen" id="screenProfile" role="region" aria-label="Profile">
+    <div class="screen-scroll">
+      <h2>👤 Profile</h2>
+      <div id="profileContent"></div>
+    </div>
   </div>
-</div>
 
-<!-- ==================== NEW: PROFILE ==================== -->
-<div class="screen" id="screenProfile">
-  <div class="screen-scroll">
-    <h2 style="margin-bottom:14px">👤 Profile</h2>
-    <div id="profileContent"></div>
+  <!-- ==================== CARD BROWSER ==================== -->
+  <div class="screen" id="screenCardBrowser" role="region" aria-label="Card Browser">
+    <div class="screen-scroll">
+      <h2>📚 Card Browser</h2>
+      <p class="muted">Browse, search, and manage all cards.</p>
+      <div id="cardBrowserContent"></div>
+    </div>
   </div>
-</div>
 
-<!-- ==================== NEW: CARD BROWSER ==================== -->
-<div class="screen" id="screenCardBrowser">
-  <div class="screen-scroll">
-    <h2 style="margin-bottom:4px">📚 Card Browser</h2>
-    <p class="muted">Browse, search, and manage all cards.</p>
-    <div id="cardBrowserContent"></div>
+  <!-- ==================== LEADERBOARD ==================== -->
+  <div class="screen" id="screenLeaderboard" role="region" aria-label="Leaderboard">
+    <div class="screen-scroll">
+      <h2>🏆 Leaderboard</h2>
+      <div id="leaderboardContent"></div>
+    </div>
   </div>
-</div>
 
-<!-- ADDITION 2: ==================== LEADERBOARD ==================== -->
-<div class="screen" id="screenLeaderboard">
-  <div class="screen-scroll">
-    <h2 style="margin-bottom:14px">🏆 Leaderboard</h2>
-    <div id="leaderboardContent"></div>
+  <!-- ==================== FLASHCARD MODE ==================== -->
+  <div class="screen" id="screenFlashcard" role="region" aria-label="Flashcard Study">
+    <div class="screen-scroll">
+      <h2>📖 Flashcard Study</h2>
+      <div id="flashcardContent"></div>
+    </div>
   </div>
-</div>
 
-<!-- ==================== NEW: FLASHCARD MODE ==================== -->
-<div class="screen" id="screenFlashcard">
-  <div class="screen-scroll">
-    <h2 style="margin-bottom:14px">📖 Flashcard Study</h2>
-    <div id="flashcardContent"></div>
-  </div>
-</div>
+  <!-- ====================================================================
+       PERSISTENT BOTTOM NAV
+  ==================================================================== -->
+  <nav class="bottom-nav" id="bottomNav" aria-label="Main navigation">
+    <button class="nav-item active" data-screen="screenHome" type="button" aria-current="true">
+      <span class="nav-icon" aria-hidden="true">🏠</span>Home
+    </button>
+    <button class="nav-item" data-screen="screenStats" type="button">
+      <span class="nav-icon" aria-hidden="true">📊</span>Stats
+    </button>
+    <button class="nav-item" data-screen="screenShop" type="button">
+      <span class="nav-icon" aria-hidden="true">🧥</span>Locker
+    </button>
+    <button class="nav-item" data-screen="screenLeaderboard" type="button">
+      <span class="nav-icon" aria-hidden="true">🏆</span>Ranks
+    </button>
+    <button class="nav-item" data-screen="screenSettings" type="button">
+      <span class="nav-icon" aria-hidden="true">⚙</span>Settings
+    </button>
+  </nav>
 
-<!-- ====================================================================
-     PERSISTENT BOTTOM NAV — Outside all screens, always visible
-     except during gameplay (hidden by JS when game.running)
-     ==================================================================== -->
-<!-- ADDITION 3: Replaced Profile nav item with Leaderboard (Ranks) -->
-<div class="bottom-nav" id="bottomNav">
-  <div class="nav-item active" data-screen="screenHome"><span class="nav-icon">🏠</span>Home</div>
-  <div class="nav-item" data-screen="screenStats"><span class="nav-icon">📊</span>Stats</div>
-  <div class="nav-item" data-screen="screenShop"><span class="nav-icon">🧥</span>Locker</div>
-  <div class="nav-item" data-screen="screenLeaderboard"><span class="nav-icon">🏆</span>Ranks</div>
-  <div class="nav-item" data-screen="screenSettings"><span class="nav-icon">⚙</span>Settings</div>
-</div>
-
-<!-- ==================== LOAD GAME ==================== -->
-<script type="module" src="js/main.js"></script>
+  <!-- ==================== LOAD GAME ==================== -->
+  <script type="module" src="js/main.js"></script>
 
 </body>
 </html>
