@@ -1,21 +1,14 @@
 /**
  * themes.js — Specialty theme color configs with night mode variants
  *
- * Each theme defines colors for:
- * - bg: scene background
- * - ground: track floor
- * - wall: side wall color
- * - glow: accent glow color (lane lines, arch lights, gate glow)
- * - gate: gate frame color
- * - accent: secondary accent
- *
- * Night mode variants darken backgrounds and reduce glow intensity
- * while keeping enough contrast for gameplay readability.
- * Night mode is toggled via storage.get('nightMode') and affects
- * the 3D scene (not just CSS).
- *
- * The engine calls getTheme() on run start and when night mode
- * is toggled during gameplay.
+ * ARCHITECTURE CONTRACT (§23, §30):
+ * - Agent 13 owns this file.
+ * - Each theme defines colors for: bg, ground, wall, glow, gate, accent.
+ * - Night mode variants darken backgrounds and reduce glow intensity.
+ * - getTheme() is called on run start and when night mode toggles.
+ * - getSubjectTheme() supports specialty-specific decorations.
+ * - Does not import storage directly for night mode check;
+ *   caller passes nightMode flag or we read it at call time.
  */
 
 import { storage } from '../storage.js';
@@ -87,7 +80,6 @@ var THEMES_NORMAL = {
   }
 };
 
-// Night mode themes — darker backgrounds, muted glows
 var THEMES_NIGHT = {
   "Neurology": {
     bg: 0x040414, ground: 0x060518, wall: 0x151566,
@@ -157,7 +149,7 @@ var THEMES_NIGHT = {
 
 /**
  * Get the active theme based on selected subjects and night mode.
- * @param {string[]} selectedSubjects - Array of subject names
+ * @param {string[]} selectedSubjects
  * @returns {object} Theme color config
  */
 export function getTheme(selectedSubjects) {
@@ -177,7 +169,6 @@ export function getTheme(selectedSubjects) {
 
 /**
  * Get theme for a specific subject name.
- * Used by props.js for specialty-specific decorations.
  * @param {string} subject
  * @returns {object} Theme color config
  */
