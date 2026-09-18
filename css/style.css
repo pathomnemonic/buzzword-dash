@@ -1983,3 +1983,47 @@ html, body {
   background: rgba(30, 15, 70, 0.85);
   color: #ffffff;
 }
+/* ==================== COUNTDOWN TIP ==================== */
+#countdownTip {
+    pointer-events: none;
+    z-index: 10;
+}
+
+/* ==================== QUESTION TYPE BADGE (post-run) ==================== */
+.question-type-badge {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 6px;
+    font-size: 9px;
+    font-weight: 700;
+    margin: 1px;
+    background: rgba(68, 170, 255, 0.12);
+    color: var(--accent-blue);
+}
+
+/* ==================== PEARL DISPLAY ==================== */
+.pearl-item {
+    font-size: 11px;
+    color: var(--accent-gold);
+    padding: 2px 0;
+}
+.pearl-item::before {
+    content: '💡 ';
+}
+
+/* ==================== DIFFICULTY STARS (post-run review) ==================== */
+.difficulty-stars {
+    display: inline-block;
+    font-size: 10px;
+    margin-left: 6px;
+}
+.difficulty-stars.easy { color: var(--accent-green); }
+.difficulty-stars.medium { color: var(--accent-gold); }
+.difficulty-stars.hard { color: var(--accent-red); }
+
+/* ==================== ACTIVE FILTER INDICATOR ==================== */
+#activeFilterCount {
+    font-size: 10px;
+    color: var(--accent-orange);
+    font-weight: 700;
+}
