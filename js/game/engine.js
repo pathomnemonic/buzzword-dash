@@ -493,7 +493,17 @@ class Game {
     this._createPlayerShadow();
     this.trailSystem = new TrailSystem(this.scene);
     this.powerupFX = new PowerUpFX(this.scene);
-    setupInput(this.renderer, this);
+    var self = this;
+    this._inputDispose = setupInput(this.renderer.domElement, {
+        moveLeft: function() { if (self.targetLane > 0) self.targetLane--; },
+        moveRight: function() { if (self.targetLane < 2) self.targetLane++; },
+        jump: function() { self.jump(); },
+        slide: function() { self.slide(); },
+        rush: function() { self.addRushStack(); },
+        pause: function() { self.togglePause(); }
+    }, {
+        enabled: function() { return self._state === GAME_STATES.PLAYING; }
+    });
 
     // NOTE: No renderer.setAnimationLoop() here.
     // main.js owns the render loop and calls game.update() and game.render().
