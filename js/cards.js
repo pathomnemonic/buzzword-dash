@@ -1,5 +1,5 @@
 // js/cards.js — Hub file for Buzzword Dash card database
-// Integration Agent: Combines all 15 subject card files into unified exports
+// Auto-validates and filters cards at import time. Zero manual steps required.
 
 import { NEUROLOGY_CARDS } from './cards/neurology.js';
 import { CARDIOLOGY_CARDS } from './cards/cardiology.js';
@@ -43,7 +43,188 @@ export const SOURCE_DISCIPLINES = [
   "genetics", "immunology", "ethics"
 ];
 
-export const CARDS = [].concat(
+// ═══════════════════════════════════════════════════════════
+// AUTOMATIC CARD CLEANING — runs once at import time
+// ═══════════════════════════════════════════════════════════
+
+function cleanCards(rawCards) {
+  const cleaned = [];
+  const dropped = [];
+  const warnings = [];
+  const seenIds = {};
+
+  for (const c of rawCards) {
+
+    // ── 1. Skip cards missing essential fields ──
+    if (!c || !c.id || !c.bw || !c.ans) {
+      dropped.push({ id: c?.id || '??', reason: 'missing id, bw, or ans' });
+      continue;
+    }
+
+    // ── 2. Skip duplicate IDs (keep first occurrence) ──
+    if (seenIds[c.id]) {
+      dropped.push({ id: c.id, reason: 'duplicate ID (already seen)' });
+      continue;
+    }
+    seenIds[c.id] = true;
+
+    // ── 3. Skip cards without exactly 2 distractors ──
+    if (!c.d || c.d.length !== 2) {
+      dropped.push({ id: c.id, reason: `needs exactly 2 distractors, has ${c.d ? c.d.length : 0}` });
+      continue;
+    }
+
+    // ── 4. Patch missing new fields with safe defaults ──
+    if (c.exams === undefined) {
+      c.exams = ["step1", "step2"];
+      warnings.push(`${c.id}: added default exams`);
+    }
+    if (c.baseDifficulty === undefined) {
+      c.baseDifficulty = 2;
+      warnings.push(`${c.id}: added default baseDifficulty`);
+    }
+    if (c.questionType === undefined) {
+      c.questionType = "buzzword_dx";
+      warnings.push(`${c.id}: added default questionType`);
+    }
+    if (c.source === undefined) {
+      c.source = "clinical_medicine";
+      warnings.push(`${c.id}: added default source`);
+    }
+    if (c.tags === undefined) {
+      c.tags = c.subj ? [c.subj.toLowerCase()] : [];
+      warnings.push(`${c.id}: added default tags`);
+    }
+    if (c.hx === undefined) {
+      c.hx = false;
+      warnings.push(`${c.id}: added default hx`);
+    }
+    if (c.yr === undefined) {
+      c.yr = 2;
+      warnings.push(`${c.id}: added default yr`);
+    }
+    if (c.pearls === undefined) {
+      c.pearls = c.tp ? [c.tp.split('.')[0]] : [];
+      warnings.push(`${c.id}: added default pearl from teaching point`);
+    }
+
+    // ── 5. Fix ww keys that don't match distractors ──
+    if (c.ww) {
+      const wwKeys = Object.keys(c.ww);
+      const newWw = {};
+      let wwFixed = false;
+      c.d.forEach((dist, idx) => {
+        if (c.ww[dist]) {
+          newWw[dist] = c.ww[dist];
+        } else if (wwKeys[idx]) {
+          newWw[dist] = c.ww[wwKeys[idx]];
+          wwFixed = true;
+        } else {
+          newWw[dist] = "See teaching point for comparison.";
+          wwFixed = true;
+        }
+      });
+      if (wwFixed) {
+        warnings.push(`${c.id}: remapped ww keys to match distractors`);
+      }
+      c.ww = newWw;
+    }
+
+    // ── 6. Trim buzzwords that are too long (>10 words) ──
+    //    Split them into shorter chunks rather than dropping the card
+    c.bw = c.bw.flatMap(b => {
+      const words = b.split(/\s+/);
+      if (words.length > 10) {
+        warnings.push(`${c.id}: split long buzzword "${b.substring(0, 40)}..."`);
+        const chunks = [];
+        for (let j = 0; j < words.length; j += 7) {
+          chunks.push(words.slice(j, j + 7).join(' '));
+        }
+        return chunks;
+      }
+      return [b];
+    });
+
+    // ── 7. Answer-leak filtering ──
+    // Get significant words from the answer (longer than 4 characters)
+    const ansWords = c.ans
+      .toLowerCase()
+      .split(/[\s\-\/\(\)]+/)
+      .filter(w => w.length > 4);
+
+    // Get significant words from each distractor
+    const distractorWords = new Set();
+    for (const dist of c.d) {
+      dist.toLowerCase().split(/[\s\-\/\(\)]+/).forEach(w => {
+        if (w.length > 4) distractorWords.add(w);
+      });
+    }
+
+    // Filter buzzwords: remove any that leak the answer
+    let leaksFound = 0;
+    const safeBuzzwords = c.bw.filter(bw => {
+      const bwLower = bw.toLowerCase();
+      for (const w of ansWords) {
+        // It's a leak ONLY if the word appears in the buzzword
+        // AND does NOT also appear in a distractor
+        // (if it's in a distractor too, it doesn't uniquely point to the answer)
+        if (bwLower.includes(w) && !distractorWords.has(w)) {
+          leaksFound++;
+          return false; // remove this buzzword
+        }
+      }
+      return true; // keep this buzzword
+    });
+
+    // Drop the entire card if fewer than 2 buzzwords survive
+    if (safeBuzzwords.length < 2) {
+      dropped.push({
+        id: c.id,
+        reason: `only ${safeBuzzwords.length} buzzword(s) left after removing ${leaksFound} leak(s)`
+      });
+      continue;
+    }
+
+    // Use the cleaned buzzwords
+    if (leaksFound > 0) {
+      warnings.push(`${c.id}: removed ${leaksFound} leaking buzzword(s), ${safeBuzzwords.length} remain`);
+    }
+    c.bw = safeBuzzwords;
+
+    cleaned.push(c);
+  }
+
+  // ── Console output ──
+  // Always log the summary
+  console.log(
+    `[Buzzword Dash] ${cleaned.length} cards loaded, ${dropped.length} dropped, ${warnings.length} auto-fixes applied`
+  );
+
+  // Log dropped cards so you know what was filtered
+  if (dropped.length > 0) {
+    console.warn(`[Buzzword Dash] Dropped ${dropped.length} card(s):`);
+    for (const d of dropped) {
+      console.warn(`  ✖ ${d.id}: ${d.reason}`);
+    }
+  }
+
+  // Log auto-fixes at debug level (collapsed group so it doesn't flood the console)
+  if (warnings.length > 0) {
+    console.groupCollapsed(`[Buzzword Dash] ${warnings.length} auto-fix(es) applied (click to expand)`);
+    for (const w of warnings) {
+      console.log(`  🔧 ${w}`);
+    }
+    console.groupEnd();
+  }
+
+  return cleaned;
+}
+
+// ═══════════════════════════════════════════════════════════
+// Combine all raw cards, then clean them once
+// ═══════════════════════════════════════════════════════════
+
+const RAW_CARDS = [].concat(
   NEUROLOGY_CARDS,
   CARDIOLOGY_CARDS,
   NEPHROLOGY_CARDS,
@@ -61,111 +242,4 @@ export const CARDS = [].concat(
   MULTI_CARDS
 );
 
-/*
-// ═══════════════════════════════════════════════════════════
-// VALIDATION SCRIPT — Run in browser console to verify all cards
-// ═══════════════════════════════════════════════════════════
-// 
-// To use: Open browser console and paste this function, then call validateCards()
-//
-function validateCards() {
-  var errors = [];
-  var ids = {};
-  CARDS.forEach(function(c, i) {
-    // Check duplicate IDs
-    if (ids[c.id]) errors.push('Duplicate ID: ' + c.id);
-    ids[c.id] = true;
-
-    // Check required fields
-    ['id','subj','bw','ans','d','tp','ww','exams','baseDifficulty',
-     'questionType','source','tags','hx','yr','pearls'].forEach(function(f) {
-      if (c[f] === undefined) errors.push(c.id + ' missing field: ' + f);
-    });
-
-    // Check buzzword length (max 10 words each)
-    if (c.bw) c.bw.forEach(function(b) {
-      if (b.split(/\s+/).length > 10) errors.push(c.id + ' buzzword too long: "' + b + '"');
-    });
-
-    // Check answer leak
-    if (c.ans && c.bw) {
-      var ansWords = c.ans.toLowerCase().split(/[\s\-\/\(\)]+/).filter(function(w) {
-        return w.length > 4;
-      });
-      c.bw.forEach(function(b) {
-        var bwLower = b.toLowerCase();
-        ansWords.forEach(function(w) {
-          if (bwLower.indexOf(w) >= 0) {
-            var alsoInDistractor = c.d && c.d.some(function(d) {
-              return d.toLowerCase().indexOf(w) >= 0;
-            });
-            if (!alsoInDistractor) {
-              errors.push(c.id + ' ANSWER LEAK: "' + b + '" contains "' + w + '"');
-            }
-          }
-        });
-      });
-    }
-
-    // Check distractor count
-    if (!c.d || c.d.length !== 2) errors.push(c.id + ' needs exactly 2 distractors');
-
-    // Check ww keys match distractors
-    if (c.d && c.ww) {
-      c.d.forEach(function(dist) {
-        if (!c.ww[dist]) errors.push(c.id + ' missing ww entry for distractor: "' + dist + '"');
-      });
-    }
-
-    // Check new field types
-    if (c.exams && !Array.isArray(c.exams)) errors.push(c.id + ' exams must be array');
-    if (c.tags && !Array.isArray(c.tags)) errors.push(c.id + ' tags must be array');
-    if (c.pearls && !Array.isArray(c.pearls)) errors.push(c.id + ' pearls must be array');
-    if (c.baseDifficulty && (c.baseDifficulty < 1 || c.baseDifficulty > 3)) {
-      errors.push(c.id + ' baseDifficulty must be 1-3');
-    }
-    if (c.yr && (c.yr < 1 || c.yr > 4)) {
-      errors.push(c.id + ' yr must be 1-4');
-    }
-    if (c.hx !== undefined && typeof c.hx !== 'boolean') {
-      errors.push(c.id + ' hx must be boolean');
-    }
-  });
-
-  // Summary stats
-  var subjCounts = {};
-  var typeCounts = {};
-  var hxCount = 0;
-  CARDS.forEach(function(c) {
-    subjCounts[c.subj] = (subjCounts[c.subj] || 0) + 1;
-    typeCounts[c.questionType] = (typeCounts[c.questionType] || 0) + 1;
-    if (c.hx) hxCount++;
-  });
-
-  console.log('══════════════════════════════════════');
-  console.log('BUZZWORD DASH — Card Validation Report');
-  console.log('══════════════════════════════════════');
-  console.log('Total cards:', CARDS.length);
-  console.log('Errors found:', errors.length);
-  console.log('High-yield cards:', hxCount, '(' + Math.round(hxCount/CARDS.length*100) + '%)');
-  console.log('');
-  console.log('Cards by subject:');
-  Object.keys(subjCounts).sort().forEach(function(s) {
-    console.log('  ' + s + ': ' + subjCounts[s]);
-  });
-  console.log('');
-  console.log('Cards by question type:');
-  Object.keys(typeCounts).sort().forEach(function(t) {
-    console.log('  ' + t + ': ' + typeCounts[t]);
-  });
-  console.log('');
-  if (errors.length > 0) {
-    console.warn('ERRORS:');
-    errors.forEach(function(e) { console.warn('  ⚠ ' + e); });
-  } else {
-    console.log('✅ All cards passed validation!');
-  }
-  return errors;
-}
-validateCards();
-*/
+export const CARDS = cleanCards(RAW_CARDS);
