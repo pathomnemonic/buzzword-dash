@@ -8,16 +8,18 @@
  * - Exam filter support
  * - Session summary with accuracy
  * - Review missed cards immediately after session
+ *
+ * FIXES APPLIED:
+ * - REMOVED: Local EXAM_FILTERS fallback (now exported from hub cards.js)
+ * - FIXED: Stats double-counting — removed direct flashcardCorrect/flashcardWrong
+ *   increments from markCorrect() and markIncorrect()
+ * - FIXED: getSummary() no longer has side effects (no longer increments
+ *   flashcardSessions or calls addCardsStudied on every call)
+ * - ADDED: end() now records session stats exactly once via
+ *   storage.recordFlashcardSession()
  */
 
 import { CARDS, SUBJECTS } from '../cards.js';
-
-var EXAM_FILTERS = [
-    "step1", "step2", "step3",
-    "comlex1", "comlex2",
-    "shelf_im", "shelf_surg", "shelf_peds", "shelf_obgyn",
-    "shelf_psych", "shelf_neuro", "shelf_fm"
-];
 import { storage } from '../storage.js';
 import { customCards } from '../customcards.js';
 
@@ -198,8 +200,19 @@ export class FlashcardMode {
             }
         }
 
+        // Include pearls if available
+        var pearlsHTML = '';
+        if (c.pearls && c.pearls.length > 0) {
+            pearlsHTML = '<div style="margin-top:8px">' +
+                c.pearls.map(function (p) {
+                    return '<div class="pearl-item">' + p + '</div>';
+                }).join('') +
+                '</div>';
+        }
+
         return '<div class="fc-answer">✅ ' + c.ans + '</div>' +
             '<div class="fc-teaching">' + c.tp + '</div>' +
+            pearlsHTML +
             (c.d ? '<div class="fc-distractors"><strong>Distractors:</strong> ' + c.d.join(', ') + '</div>' : '') +
             (wwHTML ? '<div class="fc-why-wrong">' + wwHTML + '</div>' : '');
     }
@@ -215,8 +228,8 @@ export class FlashcardMode {
         this.currentIndex++;
         this.revealed = false;
 
-        // Track flashcard stats
-        storage.set('flashcardCorrect', (storage.get('flashcardCorrect') || 0) + 1);
+        // NOTE: Stats are recorded in end(), not here.
+        // This prevents double-counting when getSummary() is called multiple times.
     }
 
     /**
@@ -230,8 +243,7 @@ export class FlashcardMode {
         this.currentIndex++;
         this.revealed = false;
 
-        // Track flashcard stats
-        storage.set('flashcardWrong', (storage.get('flashcardWrong') || 0) + 1);
+        // NOTE: Stats are recorded in end(), not here.
     }
 
     /**
@@ -263,6 +275,9 @@ export class FlashcardMode {
 
     /**
      * Get session summary.
+     * FIXED: No longer has side effects. Stats are recorded once in end().
+     * This method can be called multiple times safely (e.g., when the
+     * summary screen re-renders).
      * @returns {object} { total, correct, wrong, accuracy, cards }
      */
     getSummary() {
@@ -273,10 +288,6 @@ export class FlashcardMode {
             else wrong++;
         }
         var total = correct + wrong;
-
-        // Update session count
-        storage.set('flashcardSessions', (storage.get('flashcardSessions') || 0) + 1);
-        storage.addCardsStudied(total);
 
         return {
             total: total,
@@ -311,9 +322,26 @@ export class FlashcardMode {
     }
 
     /**
-     * End the session.
+     * End the session and record stats exactly once.
+     * FIXED: Session stats (flashcardSessions, flashcardCorrect, flashcardWrong,
+     * totalCardsStudied) are now recorded here instead of being scattered across
+     * markCorrect(), markIncorrect(), and getSummary().
      */
     end() {
+        // Record session stats exactly once when session ends
+        if (this.results.length > 0) {
+            var correct = 0;
+            var wrong = 0;
+            for (var i = 0; i < this.results.length; i++) {
+                if (this.results[i].correct) correct++;
+                else wrong++;
+            }
+            storage.recordFlashcardSession(correct, wrong);
+            if (storage.addCardsStudied) {
+                storage.addCardsStudied(correct + wrong);
+            }
+        }
+
         this.sessionActive = false;
         this.cards = [];
         this.currentIndex = 0;
