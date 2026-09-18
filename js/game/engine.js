@@ -166,7 +166,35 @@ class Game {
   }
 
   spawnEncounter() {
-    const card = pickCard(this.recentIds, this.mode);
+    var poolResult = getCardPool({
+        subjects: storage.get('selectedSubjects') || [],
+        filters: {
+            exams: storage.get('selectedExams') || [],
+            questionTypes: storage.get('selectedQuestionTypes') || [],
+            sources: storage.get('selectedSources') || [],
+            years: storage.get('selectedYears') || [],
+            highYieldOnly: storage.get('highYieldOnly') || false,
+            includeCustomCards: true
+        },
+        mode: this.mode
+    });
+    
+    if (poolResult.error || poolResult.cards.length === 0) {
+        this.endRun();
+        return;
+    }
+    
+    var pickResult = pickCard({
+        pool: poolResult.cards,
+        recentIds: this.recentIds,
+        mode: this.mode,
+        encounterIndex: this.encountersDone,
+        orderedCardIds: null,
+        selectionState: { recentQuestionTypes: [], recentSubjects: [] },
+        rng: Math.random
+    });
+    
+    var card = pickResult ? pickResult.card : null;
     if (!card) { this.endRun(); return; }
     this.card = card;
     this.recentIds.push(card.id);
