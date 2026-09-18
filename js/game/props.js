@@ -1,12 +1,14 @@
 /**
  * props.js — Procedural medical 3D decoration builders
  *
- * Phase 3.5 visual overhaul:
- * - All props built from Three.js primitives (no external models)
- * - Specialty-themed prop sets for different subjects
- * - Props are spawned by track.js and fly toward the camera
- * - Uses MeshBasicMaterial for guaranteed visibility without lighting
- * - Uses MeshStandardMaterial where lighting/shadow matters
+ * ARCHITECTURE CONTRACT (§23, §30):
+ * - Agent 13 owns this file.
+ * - All props built from Three.js primitives (no external models).
+ * - Specialty-themed prop sets for different subjects.
+ * - Props are spawned by track.js and fly toward the camera.
+ * - Uses MeshBasicMaterial for guaranteed visibility without lighting.
+ * - Uses MeshStandardMaterial where lighting/shadow matters.
+ * - Supports quality levels via reduced geometry detail.
  *
  * Prop categories:
  * - General medical: ambulance, hospital, medical cross, pill bottle, syringe
@@ -24,8 +26,7 @@ function box(w, h, d, color, emissive) {
   var mat = emissive
     ? new THREE.MeshBasicMaterial({ color: color })
     : new THREE.MeshStandardMaterial({ color: color });
-  var mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-  return mesh;
+  return new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
 }
 
 function sphere(radius, color, basic) {
@@ -52,19 +53,16 @@ export function buildAmbulance() {
   cab.position.set(-1.5, 0.85, 0); g.add(cab);
   var stripe = box(2.5, 0.2, 1.42, 0xff2222, true);
   stripe.position.set(0, 1.1, 0); g.add(stripe);
-  // Red cross
   var cH = box(0.05, 0.3, 0.1, 0xff0000, true);
   cH.position.set(0, 1.5, 0.72); g.add(cH);
   var cV = box(0.05, 0.1, 0.3, 0xff0000, true);
   cV.position.set(0, 1.5, 0.72); g.add(cV);
-  // Wheels
   var wGeo = new THREE.CylinderGeometry(0.25, 0.25, 0.15, 12);
   var wMat = new THREE.MeshStandardMaterial({ color: 0x222222 });
   [[-0.8,0.25,0.7],[-0.8,0.25,-0.7],[0.8,0.25,0.7],[0.8,0.25,-0.7]].forEach(function(p) {
     var w = new THREE.Mesh(wGeo, wMat);
     w.position.set(p[0], p[1], p[2]); w.rotation.x = Math.PI / 2; g.add(w);
   });
-  // Roof lights
   var l1 = box(0.3, 0.15, 0.2, 0xff4444, true);
   l1.position.set(-0.3, 1.68, 0); g.add(l1);
   var l2 = box(0.3, 0.15, 0.2, 0x4444ff, true);
@@ -100,7 +98,6 @@ export function buildMedicalCross() {
   v.position.set(0, 2.5, 0); g.add(v);
   var pole = cylinder(0.06, 0.06, 2, 0x888888, false);
   pole.position.set(0, 1, 0); g.add(pole);
-  // Base
   var base = cylinder(0.3, 0.35, 0.1, 0x666666, false);
   base.position.set(0, 0.05, 0); g.add(base);
   return g;
@@ -145,7 +142,6 @@ export function buildDNAHelix() {
   var g = new THREE.Group();
   var mat1 = new THREE.MeshBasicMaterial({ color: 0x4488ff });
   var mat2 = new THREE.MeshBasicMaterial({ color: 0xff4488 });
-  var rungMat = new THREE.MeshBasicMaterial({ color: 0x44ff88 });
   var height = 5, radius = 0.4, turns = 3, segments = 40;
   for (var i = 0; i < segments; i++) {
     var t = i / segments, y = t * height, angle = t * turns * Math.PI * 2;
@@ -165,19 +161,15 @@ export function buildDNAHelix() {
 
 export function buildBrain() {
   var g = new THREE.Group();
-  // Two hemispheres
   var hemiMat = new THREE.MeshStandardMaterial({ color: 0xffaaaa, roughness: 0.7 });
   var left = new THREE.Mesh(new THREE.SphereGeometry(0.7, 12, 10, 0, Math.PI, 0, Math.PI), hemiMat);
   left.position.set(-0.15, 1.5, 0); left.rotation.y = Math.PI / 2; g.add(left);
   var right = left.clone();
   right.position.set(0.15, 1.5, 0); right.rotation.y = -Math.PI / 2; g.add(right);
-  // Cerebellum
   var cb = sphere(0.35, 0xdd8888, false);
   cb.position.set(0, 0.9, 0.2); g.add(cb);
-  // Brain stem
   var stem = cylinder(0.12, 0.08, 0.5, 0xddaaaa, false);
   stem.position.set(0, 0.5, 0.1); g.add(stem);
-  // Sulci (grooves) as dark lines
   var grooveMat = new THREE.MeshBasicMaterial({ color: 0xcc7777 });
   for (var i = 0; i < 5; i++) {
     var groove = new THREE.Mesh(new THREE.TorusGeometry(0.5 + i * 0.05, 0.015, 4, 12, Math.PI * 0.6), grooveMat);
@@ -192,14 +184,10 @@ export function buildBrain() {
 
 export function buildNeuron() {
   var g = new THREE.Group();
-  // Cell body (soma)
   var soma = sphere(0.3, 0xaa44ff, true);
   soma.position.set(0, 1.5, 0); g.add(soma);
-  // Nucleus
   var nucleus = sphere(0.12, 0x6622cc, true);
   nucleus.position.set(0, 1.5, 0); g.add(nucleus);
-  // Dendrites (branching arms)
-  var dendMat = new THREE.MeshBasicMaterial({ color: 0xbb66ff });
   for (var i = 0; i < 6; i++) {
     var angle = (i / 6) * Math.PI * 2;
     var len = 0.5 + Math.random() * 0.4;
@@ -209,7 +197,6 @@ export function buildNeuron() {
     );
     dend.rotation.z = angle + Math.PI / 2;
     g.add(dend);
-    // Tip sphere
     var tip = sphere(0.04, 0xdd88ff, true);
     tip.position.set(
       Math.cos(angle) * (0.35 + len * 0.4),
@@ -218,16 +205,13 @@ export function buildNeuron() {
     );
     g.add(tip);
   }
-  // Axon
   var axon = cylinder(0.04, 0.03, 1.5, 0x8844cc, true);
   axon.position.set(0, 0.5, 0); g.add(axon);
-  // Myelin sheath segments
   for (var j = 0; j < 4; j++) {
     var myelin = cylinder(0.07, 0.07, 0.2, 0xddddff, true);
     myelin.material.transparent = true; myelin.material.opacity = 0.5;
     myelin.position.set(0, 0.1 + j * 0.35, 0); g.add(myelin);
   }
-  // Axon terminal
   var terminal = sphere(0.06, 0xff44aa, true);
   terminal.position.set(0, -0.3, 0); g.add(terminal);
   return g;
@@ -235,22 +219,17 @@ export function buildNeuron() {
 
 export function buildSpine() {
   var g = new THREE.Group();
-  var boneMat = new THREE.MeshStandardMaterial({ color: 0xeeddcc });
-  // Vertebrae stack
   for (var i = 0; i < 8; i++) {
     var vert = cylinder(0.2 - i * 0.01, 0.22 - i * 0.01, 0.18, 0xeeddcc, false);
     vert.position.set(0, i * 0.25, 0); g.add(vert);
-    // Disc between vertebrae
     if (i < 7) {
       var disc = cylinder(0.18, 0.18, 0.06, 0x6688aa, true);
       disc.material.transparent = true; disc.material.opacity = 0.6;
       disc.position.set(0, i * 0.25 + 0.12, 0); g.add(disc);
     }
-    // Spinous process
     var proc = box(0.04, 0.04, 0.3, 0xddccbb, false);
     proc.position.set(0, i * 0.25, 0.2); g.add(proc);
   }
-  // Spinal cord (inside)
   var cord = cylinder(0.06, 0.06, 2.0, 0xffcc88, true);
   cord.material.transparent = true; cord.material.opacity = 0.4;
   cord.position.set(0, 0.9, 0); g.add(cord);
@@ -262,7 +241,6 @@ export function buildSpine() {
 
 export function buildHeart() {
   var g = new THREE.Group();
-  // Simplified heart shape from two spheres + cone
   var heartMat = new THREE.MeshStandardMaterial({ color: 0xcc2233, roughness: 0.5 });
   var leftLobe = new THREE.Mesh(new THREE.SphereGeometry(0.4, 10, 10), heartMat);
   leftLobe.position.set(-0.2, 1.7, 0); g.add(leftLobe);
@@ -270,13 +248,11 @@ export function buildHeart() {
   rightLobe.position.set(0.2, 1.7, 0); g.add(rightLobe);
   var bottom = new THREE.Mesh(new THREE.ConeGeometry(0.45, 0.7, 10), heartMat);
   bottom.position.set(0, 1.1, 0); bottom.rotation.z = Math.PI; g.add(bottom);
-  // Aorta
   var aorta = new THREE.Mesh(
     new THREE.TorusGeometry(0.15, 0.06, 8, 12, Math.PI),
     new THREE.MeshBasicMaterial({ color: 0xdd4444 })
   );
   aorta.position.set(0, 2.0, 0); aorta.rotation.x = Math.PI / 2; g.add(aorta);
-  // Pulmonary arteries
   var pa = cylinder(0.05, 0.04, 0.4, 0x4444cc, true);
   pa.position.set(-0.25, 2.1, 0.1); pa.rotation.z = 0.5; g.add(pa);
   var pa2 = pa.clone();
@@ -291,7 +267,6 @@ export function buildHeartMonitor() {
   screen.position.set(0, 2.5, 0); g.add(screen);
   var bezel = box(1.3, 0.9, 0.08, 0x888888, false);
   bezel.position.set(0, 2.5, 0.02); g.add(bezel);
-  // ECG line (zigzag)
   var points = [];
   for (var i = 0; i < 20; i++) {
     var x = -0.5 + i * 0.05;
@@ -316,7 +291,6 @@ export function buildBloodCells() {
   var g = new THREE.Group();
   var rbcMat = new THREE.MeshBasicMaterial({ color: 0xdd2222, transparent: true, opacity: 0.7 });
   var wbcMat = new THREE.MeshBasicMaterial({ color: 0xeeeeff, transparent: true, opacity: 0.6 });
-  // Red blood cells (biconcave disc approximation using flattened spheres)
   for (var i = 0; i < 12; i++) {
     var rbc = new THREE.Mesh(new THREE.SphereGeometry(0.15, 8, 8), rbcMat);
     rbc.position.set(
@@ -329,7 +303,6 @@ export function buildBloodCells() {
     rbc.rotation.z = Math.random() * Math.PI;
     g.add(rbc);
   }
-  // White blood cells (bigger, white)
   for (var j = 0; j < 3; j++) {
     var wbc = new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 8), wbcMat);
     wbc.position.set(
@@ -338,12 +311,10 @@ export function buildBloodCells() {
       (Math.random() - 0.5) * 0.8
     );
     g.add(wbc);
-    // Nucleus
     var nuc = sphere(0.1, 0x6666aa, true);
     nuc.position.copy(wbc.position);
     g.add(nuc);
   }
-  // Platelets (tiny)
   var pltMat = new THREE.MeshBasicMaterial({ color: 0xffcc44 });
   for (var k = 0; k < 8; k++) {
     var plt = new THREE.Mesh(new THREE.SphereGeometry(0.05, 6, 6), pltMat);
@@ -361,22 +332,17 @@ export function buildBloodCells() {
 
 export function buildKidney() {
   var g = new THREE.Group();
-  // Kidney bean shape (two overlapping spheres with indent)
   var kidneyMat = new THREE.MeshStandardMaterial({ color: 0x993333, roughness: 0.6 });
   var outer = new THREE.Mesh(new THREE.SphereGeometry(0.5, 12, 12), kidneyMat);
   outer.position.set(0, 1.5, 0);
   outer.scale.set(0.7, 1, 0.5);
   g.add(outer);
-  // Inner indent (darker sphere subtracted visually)
   var indent = sphere(0.25, 0x771111, false);
   indent.position.set(0.2, 1.5, 0); g.add(indent);
-  // Ureter
   var ureter = cylinder(0.04, 0.04, 0.8, 0xcc8844, false);
   ureter.position.set(0.15, 0.7, 0); ureter.rotation.z = 0.15; g.add(ureter);
-  // Renal artery
   var artery = cylinder(0.03, 0.03, 0.5, 0xdd2222, true);
   artery.position.set(-0.1, 1.8, 0); artery.rotation.z = 0.8; g.add(artery);
-  // Renal vein
   var vein = cylinder(0.035, 0.035, 0.5, 0x2244aa, true);
   vein.position.set(-0.1, 1.3, 0); vein.rotation.z = 0.6; g.add(vein);
   g.scale.set(1.8, 1.8, 1.8);
@@ -385,7 +351,6 @@ export function buildKidney() {
 
 export function buildNephronTube() {
   var g = new THREE.Group();
-  // Glomerulus (ball of capillaries)
   var glomMat = new THREE.MeshBasicMaterial({ color: 0xdd4444, transparent: true, opacity: 0.7 });
   for (var i = 0; i < 8; i++) {
     var cap = new THREE.Mesh(new THREE.TorusGeometry(0.12, 0.02, 6, 8), glomMat);
@@ -397,14 +362,11 @@ export function buildNephronTube() {
     cap.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, 0);
     g.add(cap);
   }
-  // Bowman's capsule
   var capsule = new THREE.Mesh(
     new THREE.SphereGeometry(0.25, 10, 10),
     new THREE.MeshBasicMaterial({ color: 0x66aadd, transparent: true, opacity: 0.3 })
   );
   capsule.position.set(0, 2.0, 0); g.add(capsule);
-  // Tubule (curved tube)
-  var tubeMat = new THREE.MeshBasicMaterial({ color: 0x44ccaa });
   for (var j = 0; j < 12; j++) {
     var seg = cylinder(0.04, 0.04, 0.15, 0x44ccaa, true);
     var angle = j * 0.5;
@@ -416,7 +378,6 @@ export function buildNephronTube() {
     seg.rotation.z = Math.cos(angle) * 0.3;
     g.add(seg);
   }
-  // Collecting duct
   var duct = cylinder(0.05, 0.05, 0.6, 0x2288aa, true);
   duct.position.set(0.1, 0.4, 0); g.add(duct);
   g.scale.set(2, 2, 2);
@@ -428,12 +389,10 @@ export function buildNephronTube() {
 export function buildStethoscope() {
   var g = new THREE.Group();
   var tubeMat = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.4 });
-  // Earpieces
   var ear1 = sphere(0.06, 0x333333, false);
   ear1.position.set(-0.2, 2.0, 0); g.add(ear1);
   var ear2 = sphere(0.06, 0x333333, false);
   ear2.position.set(0.2, 2.0, 0); g.add(ear2);
-  // Tubing arc
   var tube = new THREE.Mesh(
     new THREE.TorusGeometry(0.8, 0.03, 8, 24, Math.PI),
     tubeMat
@@ -441,7 +400,6 @@ export function buildStethoscope() {
   tube.position.set(0, 1.0, 0);
   tube.rotation.x = Math.PI / 2;
   g.add(tube);
-  // Chest piece
   var chest = cylinder(0.15, 0.12, 0.06, 0xaaaaaa, false);
   chest.material.metalness = 0.6;
   chest.position.set(0, 0.2, 0); g.add(chest);
@@ -451,27 +409,20 @@ export function buildStethoscope() {
 
 export function buildMicroscope() {
   var g = new THREE.Group();
-  // Base
   var base = box(0.8, 0.1, 0.6, 0x333344, false);
   base.position.set(0, 0.05, 0); g.add(base);
-  // Arm
   var arm = box(0.12, 1.5, 0.12, 0x444455, false);
   arm.position.set(0, 0.8, 0.2); g.add(arm);
-  // Stage
   var stage = box(0.6, 0.06, 0.5, 0x555566, false);
   stage.position.set(0, 0.5, -0.05); g.add(stage);
-  // Eyepiece
   var eyepiece = cylinder(0.08, 0.06, 0.3, 0x222233, false);
   eyepiece.position.set(0, 1.7, 0.1); eyepiece.rotation.x = 0.3; g.add(eyepiece);
-  // Objective turret
   var turret = cylinder(0.1, 0.1, 0.08, 0x555566, false);
   turret.position.set(0, 0.65, -0.05); g.add(turret);
-  // Objectives (3 small cylinders)
   for (var i = 0; i < 3; i++) {
     var obj = cylinder(0.03, 0.025, 0.15, 0x888899, false);
     obj.position.set((i - 1) * 0.08, 0.55, -0.05); g.add(obj);
   }
-  // Light
   var light = sphere(0.05, 0xffff88, true);
   light.position.set(0, 0.35, -0.05); g.add(light);
   g.scale.set(1.5, 1.5, 1.5);
@@ -480,13 +431,10 @@ export function buildMicroscope() {
 
 export function buildDefibrillator() {
   var g = new THREE.Group();
-  // Main unit
   var unit = box(0.8, 0.5, 0.3, 0xdd4444, false);
   unit.position.set(0, 0.6, 0); g.add(unit);
-  // Screen
   var screen = box(0.4, 0.25, 0.02, 0x001100, true);
   screen.position.set(0, 0.75, -0.16); g.add(screen);
-  // ECG on screen
   var pts = [];
   for (var i = 0; i < 10; i++) {
     var px = -0.15 + i * 0.03;
@@ -498,7 +446,6 @@ export function buildDefibrillator() {
     new THREE.LineBasicMaterial({ color: 0x00ff00 })
   );
   g.add(ecgLine);
-  // Paddles
   for (var side = -1; side <= 1; side += 2) {
     var handle = cylinder(0.04, 0.04, 0.3, 0x333333, false);
     handle.position.set(side * 0.5, 0.5, 0.2); g.add(handle);
@@ -506,7 +453,6 @@ export function buildDefibrillator() {
     paddle.material.metalness = 0.5;
     paddle.position.set(side * 0.5, 0.3, 0.2); g.add(paddle);
   }
-  // Cables
   for (var c = -1; c <= 1; c += 2) {
     var cable = cylinder(0.015, 0.015, 0.4, 0x222222, true);
     cable.position.set(c * 0.35, 0.45, 0.15);
@@ -521,7 +467,6 @@ export function buildDefibrillator() {
 
 export function buildPillCapsule() {
   var g = new THREE.Group();
-  // Two half-spheres + cylinder
   var topMat = new THREE.MeshBasicMaterial({ color: 0xff4444 });
   var botMat = new THREE.MeshBasicMaterial({ color: 0xeeeeee });
   var top = new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 8, 0, Math.PI * 2, 0, Math.PI / 2), topMat);
@@ -537,7 +482,6 @@ export function buildPillCapsule() {
 }
 
 // ===== SPECIALTY-THEMED PROP SETS =====
-// Maps subject names to preferred prop builders
 
 export var SPECIALTY_PROPS = {
   "Neurology": [buildBrain, buildNeuron, buildSpine, buildDNAHelix],
@@ -582,7 +526,6 @@ export var PROP_BUILDERS = [
 // Get specialty-appropriate builders for the current subject
 export function getSpecialtyProps(subjects) {
   if (!subjects || subjects.length === 0) return SPECIALTY_PROPS["default"];
-  // Use the first selected subject's theme
   var primary = subjects[0];
   return SPECIALTY_PROPS[primary] || SPECIALTY_PROPS["default"];
 }
