@@ -10,7 +10,7 @@ import { getTheme } from './themes.js';
 import { buildTrack } from './track.js';
 import { buildPlayer, getPlayerLimbs } from './player.js';
 import { setupInput } from './input.js';
-import { pickCard, spawnGates, updateGateHighlights, flashGateResult, resolveStats } from './gates.js';
+import { getCardPool, pickCard, spawnGates, updateGateHighlights, flashGateResult, resolveStats } from './gates.js';
 import { spawnObstacle, spawnCoinBatch } from './obstacles.js';
 
 // Re-export for ui.js
@@ -67,7 +67,17 @@ class Game {
 
     buildTrack(this.scene, theme);
     this.rebuildPlayer();
-    setupInput(this.renderer, this);
+    var self = this;
+    this._inputDispose = setupInput(this.renderer.domElement, {
+        moveLeft: function() { if (self.targetLane > 0) self.targetLane--; },
+        moveRight: function() { if (self.targetLane < 2) self.targetLane++; },
+        jump: function() { self.jump(); },
+        slide: function() { self.slide(); },
+        rush: function() { self.addRushStack(); },
+        pause: function() { self.togglePause(); }
+    }, {
+        enabled: function() { return self._state === GAME_STATES.PLAYING; }
+    });
 
     const self = this;
     this.renderer.setAnimationLoop(function () {
