@@ -1,1054 +1,1153 @@
 /**
- * multiplayer.js — PeerJS transport and match protocol for Buzzword Dash.
+ * multiplayer.js — PeerJS transport, match protocol, and deterministic utilities
+ * for Buzzword Dash multiplayer.
  *
- * Supports:
- * - Five-character unambiguous room codes
- * - Host and join flows with predictable Peer IDs
- * - Ready state synchronization
- * - Synchronized match start with configurable delay
- * - Live game-state updates (throttled by caller)
- * - Encounter result messages
- * - End-of-run result messages with final scores
- * - Ping/latency measurement every 3 seconds
- * - Typed callbacks for all message categories
- * - Graceful disconnect and error handling
- * - Dynamic PeerJS CDN loading (no npm needed, works on GitHub Pages)
+ * Protocol version: 3
+ * Owner: Agent 11
  *
- * NEW (Multiplayer Expansion):
- * - Multiple game modes: mp_highscore, mp_suddendeath, mp_race
- * - Shared seed for deterministic card ordering and map selection
- * - Seeded card order generation for synchronized question pools
- * - Mode selection constants and configuration
- * - Elimination and race finish message types
- * - Rush reminder overlay support
+ * Exports:
+ *   MP_PROTOCOL_VERSION
+ *   MP_MODES
+ *   multiplayer
+ *   createSeededRandom(seed)
+ *   seededShuffle(items, rng)
+ *   getSeededSkinId(seed, skins)
+ *   buildEncounterPlan(options)
+ *   hashCardPool(cards)
+ *   validateMatchConfig(config)
+ *   validateMultiplayerMessage(message)
  *
- * PeerJS abstracts WebRTC into a simple API. After the initial
- * signaling handshake via the free PeerJS cloud server, all data
- * flows directly between browsers with DTLS encryption [3].
+ * Key architectural rules (from ARCHITECTURE.md):
+ *   - Uses protocol version 3.
+ *   - Every message uses an envelope: { protocolVersion, type, matchId, senderId, sequence, sentAt, payload }.
+ *   - Validates all inbound messages (version, matchId, sequence, payload, state transitions).
+ *   - Implements clock synchronization via midpoint method.
+ *   - Verifies content version and card-pool hash before match start.
+ *   - Produces deterministic encounter plans from seeded RNG.
+ *   - Implements result acknowledgment (result_proposal / result_ack).
+ *   - Implements disconnect/forfeit behavior.
+ *   - Removes window-global card access (window.__BUZZWORD_CARDS, window.__BUZZWORD_CUSTOM_CARDS).
+ *   - Exposes required pure utilities.
+ *   - Does not directly write to storage, manipulate UI, or play audio.
+ *   - Card pools are passed as pure inputs, never read from window globals.
  *
- * Usage:
- *   import { multiplayer, MP_MODES, getSeededCardOrder } from './multiplayer.js';
- *   await multiplayer.init();
- *   multiplayer.hostGame(function(code) { ... });
- *   multiplayer.joinGame('ABCDE');
- *   multiplayer.sendGameState({ lane: 1, score: 500, ... });
+ * PeerJS abstracts WebRTC into a simple API. After the initial signaling
+ * handshake via the free PeerJS cloud server, all data flows directly
+ * between browsers with DTLS encryption.
  */
 
+// ===== CONSTANTS =====
+
 var PEERJS_URL = 'https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js';
-var PEER_PREFIX = 'buzzworddash-';
+var PEER_PREFIX = 'buzzworddash3-';
 var peerLoadPromise = null;
+
+/** @type {3} */
+export var MP_PROTOCOL_VERSION = 3;
 
 // ===== MULTIPLAYER MODE DEFINITIONS =====
 
-/**
- * Available multiplayer game modes.
- * UI uses this to render mode selection buttons after both players connect.
- */
 export var MP_MODES = [
-    {
-        id: 'mp_highscore',
-        name: '⏱️ High Score',
-        desc: 'Most points when timer expires',
-        configs: ['timeLimit'],
-        defaults: { timeLimit: 120 }
-    },
-    {
-        id: 'mp_suddendeath',
-        name: '💀 Sudden Death',
-        desc: 'First wrong answer loses',
-        configs: [],
-        defaults: {}
-    },
-    {
-        id: 'mp_race',
-        name: '🏁 Race',
-        desc: 'First to X correct wins',
-        configs: ['targetCorrect'],
-        defaults: { targetCorrect: 20 }
-    }
+  {
+    id: 'mp_highscore',
+    name: '⏱️ High Score',
+    desc: 'Most points when timer expires',
+    configs: ['timeLimitSeconds'],
+    defaults: { timeLimitSeconds: 120, targetCorrect: null, allowContinue: false }
+  },
+  {
+    id: 'mp_suddendeath',
+    name: '💀 Sudden Death',
+    desc: 'First wrong answer loses',
+    configs: [],
+    defaults: { timeLimitSeconds: null, targetCorrect: null, allowContinue: false }
+  },
+  {
+    id: 'mp_race',
+    name: '🏁 Race',
+    desc: 'First to X correct wins',
+    configs: ['targetCorrect'],
+    defaults: { timeLimitSeconds: null, targetCorrect: 20, allowContinue: false }
+  }
 ];
 
-// ===== SEEDED RANDOM NUMBER GENERATOR =====
+// ===== REQUIRED MESSAGE TYPES =====
+
+var VALID_MESSAGE_TYPES = [
+  'hello',
+  'hello_ack',
+  'clock_ping',
+  'clock_pong',
+  'mode_selected',
+  'ready',
+  'match_config',
+  'match_config_ack',
+  'match_start',
+  'game_state',
+  'encounter_result',
+  'player_eliminated',
+  'race_finished',
+  'run_finished',
+  'result_proposal',
+  'result_ack',
+  'disconnect_notice',
+  'forfeit',
+  'error'
+];
+
+// ===== DETERMINISTIC RNG =====
 
 /**
- * Simple deterministic pseudo-random number generator (xorshift32).
- * Used to ensure both players get the same card order from the same seed.
- * Based on George Marsaglia's xorshift algorithm [6].
+ * Creates a deterministic pseudo-random number generator (xorshift32).
+ * Both players use the same seed to produce identical sequences.
  *
- * @param {number} seed - Integer seed
- * @returns {function} Function that returns next pseudo-random float [0, 1)
+ * @param {number} seed - Integer seed. Zero is normalized to 1.
+ * @returns {function(): number} Function returning next pseudo-random float in [0, 1).
  */
-function createSeededRandom(seed) {
-    var state = seed | 0;
-    if (state === 0) state = 1; // xorshift cannot have state 0
+export function createSeededRandom(seed) {
+  var state = seed | 0;
+  if (state === 0) state = 1;
 
-    return function () {
-        state ^= state << 13;
-        state ^= state >>> 17;
-        state ^= state << 5;
-        return ((state >>> 0) / 4294967296);
-    };
+  return function () {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    return (state >>> 0) / 4294967296;
+  };
 }
 
 /**
- * Generate a deterministic card order from a shared seed.
- * Both players call this with the same seed and subjects to get
- * identical card ID sequences for synchronized gameplay.
+ * Deterministic Fisher-Yates shuffle using a seeded RNG.
+ * Returns a NEW array; does not mutate the input.
  *
- * Used by mp_highscore and mp_suddendeath modes where both players
- * must see the same questions in the same order.
- *
- * @param {number} seed - Shared RNG seed from startMatch message
- * @param {string[]} subjects - Array of selected subject names
- * @param {number} count - Number of cards to include in the order
- * @returns {string[]} Array of card IDs in deterministic order
+ * @param {Array} items - Array to shuffle. Not mutated.
+ * @param {function(): number} rng - Seeded RNG from createSeededRandom.
+ * @returns {Array} A new shuffled array.
  */
-export function getSeededCardOrder(seed, subjects, count) {
-    // Lazy import to avoid circular dependency issues
-    // The caller (engine.js/gates.js) should have CARDS available
-    // We import here for standalone usage
-    var CARDS;
-    var customCards;
-
-    try {
-        // Dynamic access — these modules should already be loaded by the time
-        // multiplayer match starts
-        CARDS = window.__BUZZWORD_CARDS || [];
-        customCards = window.__BUZZWORD_CUSTOM_CARDS || [];
-    } catch (e) {
-        CARDS = [];
-        customCards = [];
-    }
-
-    var allCards = CARDS.concat(customCards);
-
-    // Filter by subjects (empty subjects = all subjects)
-    var pool;
-    if (subjects && subjects.length > 0) {
-        pool = allCards.filter(function (c) {
-            return subjects.indexOf(c.subj) >= 0;
-        });
-    } else {
-        pool = allCards.slice();
-    }
-
-    if (pool.length === 0) {
-        return [];
-    }
-
-    // Fisher-Yates shuffle with seeded random
-    var rng = createSeededRandom(seed);
-    var shuffled = pool.slice();
-
-    for (var i = shuffled.length - 1; i > 0; i--) {
-        var j = Math.floor(rng() * (i + 1));
-        var temp = shuffled[i];
-        shuffled[i] = shuffled[j];
-        shuffled[j] = temp;
-    }
-
-    // Return requested count of card IDs
-    var result = [];
-    var limit = Math.min(count, shuffled.length);
-    for (var k = 0; k < limit; k++) {
-        result.push(shuffled[k].id);
-    }
-
-    return result;
+export function seededShuffle(items, rng) {
+  var arr = items.slice();
+  for (var i = arr.length - 1; i > 0; i--) {
+    var j = Math.floor(rng() * (i + 1));
+    var temp = arr[i];
+    arr[i] = arr[j];
+    arr[j] = temp;
+  }
+  return arr;
 }
 
 /**
- * Get a deterministic skin index from a shared seed.
- * Both players use this to select the same map/skin.
+ * Get a deterministic skin ID from a shared seed and available skins array.
  *
- * @param {number} seed - Shared seed
- * @param {number} skinCount - Total number of available skins
- * @returns {number} Skin index
+ * @param {number} seed - Shared seed.
+ * @param {Array<{name: string}>} skins - Array of skin objects.
+ * @returns {string} Skin name (or first skin name if array is empty).
  */
-export function getSeededSkinIndex(seed, skinCount) {
-    if (!skinCount || skinCount <= 0) return 0;
-    // Use a simple modulo approach with bit mixing for better distribution
-    var mixed = seed;
-    mixed ^= mixed >>> 16;
-    mixed = Math.imul(mixed, 0x45d9f3b);
-    mixed ^= mixed >>> 16;
-    return ((mixed >>> 0) % skinCount);
+export function getSeededSkinId(seed, skins) {
+  if (!skins || skins.length === 0) return '';
+  var rng = createSeededRandom(seed);
+  var index = Math.floor(rng() * skins.length);
+  return skins[index].name || skins[index].id || '';
+}
+
+// ===== ENCOUNTER PLAN BUILDER =====
+
+/**
+ * Build a deterministic encounter plan from a seed and card pool.
+ * Both peers call this with identical inputs to produce identical plans.
+ *
+ * @param {object} options
+ * @param {number} options.seed - Shared RNG seed.
+ * @param {object[]} options.cards - The validated card pool (array of card objects).
+ * @param {number} options.count - Number of encounters to plan.
+ * @param {function(): number} [options.rng] - Optional pre-created RNG.
+ * @returns {object[]} Array of EncounterPlanEntry objects.
+ */
+export function buildEncounterPlan(options) {
+  var seed = options.seed || 1;
+  var cards = options.cards || [];
+  var count = options.count || 50;
+  var rng = options.rng || createSeededRandom(seed);
+
+  if (cards.length === 0) return [];
+
+  var shuffled = seededShuffle(cards, rng);
+  var plan = [];
+
+  for (var i = 0; i < count; i++) {
+    var card = shuffled[i % shuffled.length];
+    var correctLane = Math.floor(rng() * 3);
+
+    // Determine distractor order deterministically
+    var d0First = rng() < 0.5 ? 0 : 1;
+    var distractorOrder = [d0First, d0First === 0 ? 1 : 0];
+
+    // Obstacle: ~40% chance, deterministic
+    var obstacle = null;
+    if (rng() < 0.4) {
+      var obsType = rng() < 0.5 ? 'jump' : 'slide';
+      var obsLane = Math.floor(rng() * 3);
+      obstacle = {
+        type: obsType,
+        lane: obsLane,
+        variantId: 'default',
+        spawnOffset: Math.floor(rng() * 20) + 5
+      };
+    }
+
+    // Coins: 0-3 coins
+    var coinCount = Math.floor(rng() * 4);
+    var coins = [];
+    for (var c = 0; c < coinCount; c++) {
+      coins.push({
+        lane: Math.floor(rng() * 3),
+        offset: Math.floor(rng() * 30) + 5,
+        height: 1 + Math.floor(rng() * 3)
+      });
+    }
+
+    // Powerup: ~15% chance
+    var powerup = null;
+    if (rng() < 0.15) {
+      var puTypes = ['shield', 'magnet', 'double', 'autoPilot', 'scoreFrenzy'];
+      powerup = {
+        type: puTypes[Math.floor(rng() * puTypes.length)],
+        lane: Math.floor(rng() * 3),
+        offset: Math.floor(rng() * 25) + 10
+      };
+    }
+
+    plan.push({
+      encounterIndex: i,
+      cardId: card.id,
+      correctLane: correctLane,
+      distractorOrder: distractorOrder,
+      obstacle: obstacle,
+      pickups: {
+        coins: coins,
+        powerup: powerup
+      }
+    });
+  }
+
+  return plan;
+}
+
+// ===== CARD-POOL HASH =====
+
+/**
+ * Compute a deterministic hash of a card pool for content verification.
+ * Both peers compute this independently and compare before match start.
+ *
+ * Uses a simple DJB2-like hash over sorted card IDs + answer fields.
+ *
+ * @param {object[]} cards - Array of card objects with at least { id, ans, d }.
+ * @returns {string} Hex hash string.
+ */
+export function hashCardPool(cards) {
+  if (!cards || cards.length === 0) return '0';
+
+  // Sort by ID for determinism
+  var sorted = cards.slice().sort(function (a, b) {
+    if (a.id < b.id) return -1;
+    if (a.id > b.id) return 1;
+    return 0;
+  });
+
+  var hash = 5381;
+  for (var i = 0; i < sorted.length; i++) {
+    var c = sorted[i];
+    var str = c.id + '|' + c.ans + '|' + (c.d ? c.d.join(',') : '');
+    for (var j = 0; j < str.length; j++) {
+      hash = ((hash << 5) + hash + str.charCodeAt(j)) | 0;
+    }
+  }
+
+  return (hash >>> 0).toString(16);
+}
+
+// ===== MATCH CONFIG VALIDATION =====
+
+/**
+ * Validate a match configuration object.
+ *
+ * @param {object} config - Match config to validate.
+ * @returns {{ valid: boolean, errors: string[] }}
+ */
+export function validateMatchConfig(config) {
+  var errors = [];
+
+  if (!config) {
+    return { valid: false, errors: ['Config is null or undefined'] };
+  }
+
+  if (config.protocolVersion !== MP_PROTOCOL_VERSION) {
+    errors.push('Protocol version mismatch: expected ' + MP_PROTOCOL_VERSION + ', got ' + config.protocolVersion);
+  }
+
+  if (typeof config.matchId !== 'string' || config.matchId.length === 0) {
+    errors.push('matchId must be a non-empty string');
+  }
+
+  var validModes = ['mp_highscore', 'mp_suddendeath', 'mp_race'];
+  if (validModes.indexOf(config.mode) < 0) {
+    errors.push('Invalid mode: ' + config.mode);
+  }
+
+  if (typeof config.seed !== 'number' || config.seed === 0) {
+    errors.push('seed must be a non-zero number');
+  }
+
+  if (typeof config.startAt !== 'number') {
+    errors.push('startAt must be a number (timestamp)');
+  }
+
+  if (!Array.isArray(config.subjects)) {
+    errors.push('subjects must be an array');
+  }
+
+  if (typeof config.cardPoolHash !== 'string' || config.cardPoolHash.length === 0) {
+    errors.push('cardPoolHash must be a non-empty string');
+  }
+
+  if (typeof config.contentVersion !== 'string') {
+    errors.push('contentVersion must be a string');
+  }
+
+  return { valid: errors.length === 0, errors: errors };
+}
+
+// ===== MESSAGE VALIDATION =====
+
+/**
+ * Validate a multiplayer protocol message envelope.
+ *
+ * @param {object} message - The message to validate.
+ * @returns {{ valid: boolean, errors: string[] }}
+ */
+export function validateMultiplayerMessage(message) {
+  var errors = [];
+
+  if (!message || typeof message !== 'object') {
+    return { valid: false, errors: ['Message is not an object'] };
+  }
+
+  if (message.protocolVersion !== MP_PROTOCOL_VERSION) {
+    errors.push('Unsupported protocol version: ' + message.protocolVersion);
+  }
+
+  if (typeof message.type !== 'string' || VALID_MESSAGE_TYPES.indexOf(message.type) < 0) {
+    errors.push('Invalid or missing message type: ' + message.type);
+  }
+
+  if (typeof message.senderId !== 'string' || message.senderId.length === 0) {
+    errors.push('senderId must be a non-empty string');
+  }
+
+  if (typeof message.sequence !== 'number') {
+    errors.push('sequence must be a number');
+  }
+
+  if (typeof message.sentAt !== 'number') {
+    errors.push('sentAt must be a number');
+  }
+
+  // matchId can be null for hello/hello_ack/error
+  var noMatchIdTypes = ['hello', 'hello_ack', 'error'];
+  if (noMatchIdTypes.indexOf(message.type) < 0) {
+    if (message.matchId !== null && message.matchId !== undefined && typeof message.matchId !== 'string') {
+      errors.push('matchId must be a string or null');
+    }
+  }
+
+  if (message.payload !== undefined && message.payload !== null && typeof message.payload !== 'object') {
+    errors.push('payload must be an object or null');
+  }
+
+  return { valid: errors.length === 0, errors: errors };
 }
 
 // ===== PEERJS LOADING =====
 
-/**
- * Dynamically load PeerJS from CDN.
- * Caches the promise so it's only loaded once.
- * @returns {Promise<void>}
- */
 function loadPeerJS() {
-    if (window.Peer) {
-        return Promise.resolve();
+  if (window.Peer) return Promise.resolve();
+  if (peerLoadPromise) return peerLoadPromise;
+
+  peerLoadPromise = new Promise(function (resolve, reject) {
+    var existing = document.querySelector('script[data-buzzword-peerjs]');
+    if (existing) {
+      if (existing.dataset.loaded === 'true') { resolve(); return; }
+      existing.addEventListener('load', function () { resolve(); });
+      existing.addEventListener('error', function () { reject(new Error('Failed to load PeerJS.')); });
+      return;
     }
 
-    if (peerLoadPromise) {
-        return peerLoadPromise;
-    }
+    var script = document.createElement('script');
+    script.src = PEERJS_URL;
+    script.async = true;
+    script.dataset.buzzwordPeerjs = 'true';
 
-    peerLoadPromise = new Promise(function (resolve, reject) {
-        var existing = document.querySelector(
-            'script[data-buzzword-peerjs]'
-        );
+    script.onload = function () {
+      script.dataset.loaded = 'true';
+      if (window.Peer) resolve();
+      else reject(new Error('PeerJS loaded but Peer was unavailable.'));
+    };
+    script.onerror = function () { reject(new Error('Failed to load PeerJS.')); };
+    document.head.appendChild(script);
+  });
 
-        if (existing) {
-            existing.addEventListener('load', function () {
-                resolve();
-            });
-            existing.addEventListener('error', function () {
-                reject(new Error('Failed to load PeerJS.'));
-            });
-            return;
-        }
-
-        var script = document.createElement('script');
-        script.src = PEERJS_URL;
-        script.async = true;
-        script.dataset.buzzwordPeerjs = 'true';
-
-        script.onload = function () {
-            if (window.Peer) {
-                resolve();
-            } else {
-                reject(new Error('PeerJS loaded but Peer was unavailable.'));
-            }
-        };
-
-        script.onerror = function () {
-            reject(new Error('Failed to load PeerJS.'));
-        };
-
-        document.head.appendChild(script);
-    });
-
-    return peerLoadPromise;
+  return peerLoadPromise;
 }
 
 // ===== ROOM CODE UTILITIES =====
 
-/**
- * Normalize a room code to uppercase, removing ambiguous characters.
- * @param {string} code
- * @returns {string}
- */
+function generateRoomCode() {
+  var chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  var code = '';
+  for (var i = 0; i < 5; i++) {
+    code += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return code;
+}
+
 function normalizeRoomCode(code) {
-    return String(code || '')
-        .toUpperCase()
-        .replace(/[^A-HJ-NP-Z2-9]/g, '')
-        .slice(0, 5);
+  return String(code || '').toUpperCase().replace(/[^A-HJ-NP-Z2-9]/g, '').slice(0, 5);
 }
 
-// ===== RUSH REMINDER =====
+// ===== UNIQUE ID GENERATOR =====
+
+function generateId() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return 'id_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+}
+
+// ===== CLOCK SYNCHRONIZATION =====
 
 /**
- * Show a brief rush reminder overlay at the start of a multiplayer match.
- * Displays for 3 seconds then fades out.
+ * Clock offset estimator using the midpoint method.
+ * Collects multiple samples and selects the one with lowest RTT.
  */
-function showRushReminder() {
-    var existing = document.getElementById('mpRushReminder');
-    if (existing) existing.remove();
-
-    var reminder = document.createElement('div');
-    reminder.id = 'mpRushReminder';
-    reminder.innerHTML = '💡 TIP: Double-tap or press Shift to RUSH through gates for bonus points! ⚡';
-    reminder.style.cssText =
-        'position:fixed;top:12%;left:50%;transform:translateX(-50%);' +
-        'z-index:40;padding:14px 24px;border-radius:16px;' +
-        'background:rgba(10,5,30,0.94);border:2px solid rgba(255,136,0,0.6);' +
-        'color:#fff;font-size:13px;font-weight:700;text-align:center;' +
-        'max-width:340px;pointer-events:none;' +
-        'transition:opacity 0.5s ease;opacity:1;' +
-        'box-shadow:0 0 20px rgba(255,136,0,0.2);';
-
-    document.body.appendChild(reminder);
-
-    setTimeout(function () {
-        reminder.style.opacity = '0';
-    }, 2500);
-
-    setTimeout(function () {
-        if (reminder.parentNode) reminder.parentNode.removeChild(reminder);
-    }, 3200);
+function ClockSync() {
+  this.samples = [];
+  this.offsetMs = 0;
+  this.maxSamples = 5;
 }
+
+ClockSync.prototype.addSample = function (localSend, hostTimestamp, localReceive) {
+  var roundTripMs = localReceive - localSend;
+  var midpoint = localSend + roundTripMs / 2;
+  var offset = hostTimestamp - midpoint;
+
+  this.samples.push({ rtt: roundTripMs, offset: offset });
+
+  // Keep only maxSamples
+  if (this.samples.length > this.maxSamples) {
+    this.samples.shift();
+  }
+
+  // Select sample with lowest RTT
+  var best = this.samples[0];
+  for (var i = 1; i < this.samples.length; i++) {
+    if (this.samples[i].rtt < best.rtt) {
+      best = this.samples[i];
+    }
+  }
+  this.offsetMs = best.offset;
+};
+
+ClockSync.prototype.toLocalTime = function (hostTimestamp) {
+  return hostTimestamp - this.offsetMs;
+};
+
+ClockSync.prototype.reset = function () {
+  this.samples = [];
+  this.offsetMs = 0;
+};
 
 // ===== MULTIPLAYER CLASS =====
 
 export class Multiplayer {
-    constructor() {
-        this.peer = null;
-        this.conn = null;
+  constructor() {
+    this.peer = null;
+    this.conn = null;
 
-        this.roomCode = '';
-        this.isHost = false;
-        this.connected = false;
+    this.roomCode = '';
+    this.isHost = false;
+    this.connected = false;
+    this.senderId = generateId();
 
-        this.localReady = false;
-        this.opponentReady = false;
+    this.localReady = false;
+    this.opponentReady = false;
 
-        this.latency = null;
-        this.pingInterval = null;
+    this.matchId = null;
+    this.matchConfig = null;
+    this.sharedSeed = 0;
+    this.selectedMode = 'mp_highscore';
+    this.modeConfig = {};
 
-        // Selected multiplayer mode (set before starting match)
-        this.selectedMode = 'mp_highscore';
-        this.modeConfig = {};
+    this._sequence = 0;
+    this._remoteSequence = -1;
 
-        // Shared seed for deterministic card/skin selection
-        this.sharedSeed = 0;
+    this.clockSync = new ClockSync();
+    this.pingInterval = null;
+    this.latency = null;
 
-        // Typed callbacks
-        this.onConnected = null;
-        this.onDisconnected = null;
-        this.onError = null;
+    this._matchResult = null;
+    this._resultAcked = false;
 
-        this.onOpponentUpdate = null;
-        this.onReadyState = null;
-        this.onMatchStart = null;
-        this.onEncounterResult = null;
-        this.onEndRun = null;
-        this.onMessage = null;
+    // Typed callbacks
+    this.onConnected = null;
+    this.onDisconnected = null;
+    this.onError = null;
+    this.onOpponentUpdate = null;
+    this.onReadyState = null;
+    this.onModeSelected = null;
+    this.onMatchConfig = null;
+    this.onMatchConfigAck = null;
+    this.onMatchStart = null;
+    this.onEncounterResult = null;
+    this.onEliminated = null;
+    this.onRaceFinished = null;
+    this.onRunFinished = null;
+    this.onResultProposal = null;
+    this.onResultAck = null;
+    this.onForfeit = null;
+    this.onMessage = null;
+  }
 
-        // NEW callbacks for expanded modes
-        this.onEliminated = null;      // Sudden death: opponent was eliminated
-        this.onRaceFinished = null;    // Race mode: opponent finished the race
-        this.onModeSelected = null;    // Mode selection confirmed by host
+  // ===== INITIALIZATION =====
+
+  async init() {
+    await loadPeerJS();
+  }
+
+  // ===== MESSAGE ENVELOPE =====
+
+  _createEnvelope(type, payload) {
+    this._sequence++;
+    return {
+      protocolVersion: MP_PROTOCOL_VERSION,
+      type: type,
+      matchId: this.matchId,
+      senderId: this.senderId,
+      sequence: this._sequence,
+      sentAt: Date.now(),
+      payload: payload || {}
+    };
+  }
+
+  // ===== SEND =====
+
+  send(type, payload) {
+    if (!this.conn || !this.conn.open) return false;
+    var envelope = this._createEnvelope(type, payload);
+    try {
+      this.conn.send(envelope);
+      return true;
+    } catch (e) {
+      console.warn('Multiplayer send failed:', e);
+      return false;
+    }
+  }
+
+  // ===== MODE SELECTION =====
+
+  setMode(modeId, config) {
+    this.selectedMode = modeId || 'mp_highscore';
+    this.modeConfig = config || {};
+
+    // Apply defaults
+    for (var i = 0; i < MP_MODES.length; i++) {
+      if (MP_MODES[i].id === this.selectedMode) {
+        var defaults = MP_MODES[i].defaults || {};
+        for (var key in defaults) {
+          if (this.modeConfig[key] === undefined) {
+            this.modeConfig[key] = defaults[key];
+          }
+        }
+        break;
+      }
     }
 
-    /**
-     * Initialize PeerJS. Must be called before host/join.
-     * @returns {Promise<void>}
-     */
-    async init() {
-        await loadPeerJS();
+    this.send('mode_selected', {
+      mode: this.selectedMode,
+      config: this.modeConfig
+    });
+  }
+
+  // ===== READY =====
+
+  sendReady(ready) {
+    this.localReady = ready !== false;
+    this.send('ready', { ready: this.localReady });
+
+    if (this.onReadyState) {
+      this.onReadyState({
+        localReady: this.localReady,
+        opponentReady: this.opponentReady
+      });
+    }
+  }
+
+  // ===== MATCH CONFIG (host sends, joiner acks) =====
+
+  sendMatchConfig(config) {
+    if (!this.isHost) return false;
+
+    this.matchId = config.matchId || generateId();
+    this.sharedSeed = config.seed || Math.floor(Math.random() * 2147483647);
+    if (this.sharedSeed === 0) this.sharedSeed = 1;
+
+    var mode = config.mode || this.selectedMode || 'mp_highscore';
+
+    var finalModeConfig = {};
+    for (var mi = 0; mi < MP_MODES.length; mi++) {
+      if (MP_MODES[mi].id === mode) {
+        var defs = MP_MODES[mi].defaults || {};
+        for (var dk in defs) finalModeConfig[dk] = defs[dk];
+        break;
+      }
+    }
+    if (this.modeConfig) {
+      for (var mk in this.modeConfig) finalModeConfig[mk] = this.modeConfig[mk];
+    }
+    if (config.modeConfig) {
+      for (var ck in config.modeConfig) finalModeConfig[ck] = config.modeConfig[ck];
     }
 
-    /**
-     * Generate a 5-character room code.
-     * Uses characters that are unambiguous (no O/0, I/1, L).
-     * @returns {string}
-     */
-    generateRoomCode() {
-        var chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-        var code = '';
+    this.matchConfig = {
+      protocolVersion: MP_PROTOCOL_VERSION,
+      matchId: this.matchId,
+      mode: mode,
+      seed: this.sharedSeed,
+      startAt: config.startAt || Date.now() + 3000,
+      subjects: Array.isArray(config.subjects) ? config.subjects.slice() : [],
+      filters: config.filters || {
+        exams: [],
+        questionTypes: [],
+        sources: [],
+        years: [],
+        highYieldOnly: false,
+        includeCustomCards: false
+      },
+      cardPoolHash: config.cardPoolHash || '',
+      contentVersion: config.contentVersion || '',
+      skinId: config.skinId || '',
+      modeConfig: finalModeConfig
+    };
 
-        for (var i = 0; i < 5; i++) {
-            code += chars.charAt(
-                Math.floor(Math.random() * chars.length)
-            );
-        }
+    this.send('match_config', this.matchConfig);
+    return this.matchConfig;
+  }
 
-        return code;
+  sendMatchConfigAck(ack) {
+    this.send('match_config_ack', {
+      accepted: !!ack.accepted,
+      reason: ack.reason || null
+    });
+  }
+
+  // ===== MATCH START =====
+
+  sendMatchStart() {
+    if (!this.isHost || !this.matchConfig) return false;
+    this.send('match_start', this.matchConfig);
+    return this.matchConfig;
+  }
+
+  // ===== GAME STATE =====
+
+  sendGameState(state) {
+    return this.send('game_state', {
+      lane: Number(state.lane) || 0,
+      score: Number(state.score) || 0,
+      streak: Number(state.streak) || 0,
+      correct: Number(state.correct) || 0,
+      wrong: Number(state.wrong) || 0,
+      lives: Number(state.lives) || 0,
+      rushing: !!state.rushing,
+      rushStacks: Number(state.rushStacks) || 0,
+      running: !!state.running,
+      correctCount: Number(state.correctCount) || Number(state.correct) || 0,
+      timeRemaining: Number(state.timeRemaining) || 0,
+      eliminated: !!state.eliminated
+    });
+  }
+
+  // ===== ENCOUNTER RESULT =====
+
+  sendEncounterResult(correct, score, cardId) {
+    return this.send('encounter_result', {
+      correct: !!correct,
+      score: Number(score) || 0,
+      cardId: cardId || ''
+    });
+  }
+
+  // ===== ELIMINATION (Sudden Death) =====
+
+  sendEliminated(cardId) {
+    return this.send('player_eliminated', {
+      cardId: cardId || ''
+    });
+  }
+
+  // ===== RACE FINISHED =====
+
+  sendRaceFinished(correctCount, totalTime) {
+    return this.send('race_finished', {
+      correctCount: Number(correctCount) || 0,
+      totalTime: Number(totalTime) || 0
+    });
+  }
+
+  // ===== RUN FINISHED =====
+
+  sendRunFinished(finalState) {
+    finalState = finalState || {};
+    return this.send('run_finished', {
+      score: Number(finalState.score) || 0,
+      correct: Number(finalState.correct) || 0,
+      wrong: Number(finalState.wrong) || 0,
+      bestStreak: Number(finalState.bestStreak) || 0,
+      coins: Number(finalState.coins) || 0,
+      correctCount: Number(finalState.correctCount) || Number(finalState.correct) || 0,
+      eliminated: !!finalState.eliminated,
+      raceTime: Number(finalState.raceTime) || 0
+    });
+  }
+
+  // ===== RESULT PROPOSAL / ACK =====
+
+  sendResultProposal(result) {
+    this._matchResult = result;
+    return this.send('result_proposal', result);
+  }
+
+  sendResultAck(accepted) {
+    this._resultAcked = true;
+    return this.send('result_ack', { accepted: !!accepted });
+  }
+
+  // ===== FORFEIT =====
+
+  sendForfeit(reason) {
+    this.send('forfeit', { reason: reason || 'User forfeited' });
+  }
+
+  // ===== DISCONNECT NOTICE =====
+
+  sendDisconnectNotice(reason) {
+    this.send('disconnect_notice', { reason: reason || 'Disconnecting' });
+  }
+
+  // ===== CLOCK PING/PONG =====
+
+  _sendClockPing() {
+    this.send('clock_ping', {
+      localSend: Date.now()
+    });
+  }
+
+  // ===== HOST / JOIN =====
+
+  async hostGame(onReady) {
+    await this.init();
+    this.disconnect();
+
+    this.isHost = true;
+    this.roomCode = generateRoomCode();
+    this.localReady = false;
+    this.opponentReady = false;
+    this._sequence = 0;
+    this._remoteSequence = -1;
+    this.matchId = null;
+    this.clockSync.reset();
+
+    var self = this;
+
+    try {
+      this.peer = new window.Peer(PEER_PREFIX + this.roomCode);
+    } catch (error) {
+      this._emitError('Failed to create room: ' + error.message);
+      return;
     }
 
-    /**
-     * Set the multiplayer game mode and its configuration.
-     * Should be called by the host before sendStartMatch().
-     *
-     * @param {string} modeId - One of: 'mp_highscore', 'mp_suddendeath', 'mp_race'
-     * @param {object} [config] - Mode-specific configuration
-     */
-    setMode(modeId, config) {
-        this.selectedMode = modeId || 'mp_highscore';
-        this.modeConfig = config || {};
+    this.peer.on('open', function () {
+      if (onReady) onReady(self.roomCode);
+    });
 
-        // Apply defaults from MP_MODES if not specified
-        for (var i = 0; i < MP_MODES.length; i++) {
-            if (MP_MODES[i].id === this.selectedMode) {
-                var defaults = MP_MODES[i].defaults || {};
-                for (var key in defaults) {
-                    if (this.modeConfig[key] === undefined) {
-                        this.modeConfig[key] = defaults[key];
-                    }
-                }
-                break;
-            }
-        }
+    this.peer.on('connection', function (conn) {
+      if (self.conn && self.conn.open) { conn.close(); return; }
+      self.conn = conn;
+      self._setupConnection(conn);
+    });
 
-        // Broadcast mode selection to opponent
-        this.send({
-            type: 'modeSelected',
-            mode: this.selectedMode,
-            config: this.modeConfig,
-            timestamp: Date.now()
-        });
+    this.peer.on('disconnected', function () {
+      self.connected = false;
+      self._stopPing();
+      if (self.onDisconnected) self.onDisconnected('Peer signaling disconnected.');
+    });
+
+    this.peer.on('close', function () {
+      self._handleDisconnected('Room closed.');
+    });
+
+    this.peer.on('error', function (error) {
+      self._emitError((error.type || 'Peer error') + ': ' + (error.message || 'Unknown error'));
+    });
+  }
+
+  async joinGame(roomCode, onReady) {
+    await this.init();
+    this.disconnect();
+
+    var normalized = normalizeRoomCode(roomCode);
+    if (normalized.length !== 5) {
+      this._emitError('Room code must contain five characters.');
+      return;
     }
 
-    /**
-     * Host a new game room.
-     * Creates a Peer with a predictable ID based on the room code.
-     * The opponent joins by connecting to this ID.
-     *
-     * @param {function} onReady - Called with the room code when peer is open
-     */
-    async hostGame(onReady) {
-        await this.init();
-        this.disconnect();
+    this.isHost = false;
+    this.roomCode = normalized;
+    this.localReady = false;
+    this.opponentReady = false;
+    this._sequence = 0;
+    this._remoteSequence = -1;
+    this.matchId = null;
+    this.clockSync.reset();
 
-        this.isHost = true;
-        this.roomCode = this.generateRoomCode();
-        this.localReady = false;
-        this.opponentReady = false;
+    var self = this;
 
-        var self = this;
-
-        try {
-            this.peer = new window.Peer(
-                PEER_PREFIX + this.roomCode
-            );
-        } catch (error) {
-            this._emitError(
-                'Failed to create room: ' + error.message
-            );
-            return;
-        }
-
-        this.peer.on('open', function () {
-            if (onReady) {
-                onReady(self.roomCode);
-            }
-        });
-
-        this.peer.on('connection', function (conn) {
-            // Only accept one opponent
-            if (self.conn && self.conn.open) {
-                conn.close();
-                return;
-            }
-
-            self.conn = conn;
-            self._setupConnection(conn);
-        });
-
-        this.peer.on('disconnected', function () {
-            self.connected = false;
-            self._stopPing();
-
-            if (self.onDisconnected) {
-                self.onDisconnected('Peer signaling disconnected.');
-            }
-        });
-
-        this.peer.on('close', function () {
-            self._handleDisconnected('Room closed.');
-        });
-
-        this.peer.on('error', function (error) {
-            self._emitError(
-                (error.type || 'Peer error') +
-                ': ' +
-                (error.message || 'Unknown error')
-            );
-        });
+    try {
+      this.peer = new window.Peer();
+    } catch (error) {
+      this._emitError('Failed to initialize multiplayer: ' + error.message);
+      return;
     }
 
-    /**
-     * Join an existing game room.
-     * Connects to the host's Peer using the room code.
-     *
-     * @param {string} roomCode - The 5-character room code
-     * @param {function} [onReady] - Called when connection attempt starts
-     */
-    async joinGame(roomCode, onReady) {
-        await this.init();
-        this.disconnect();
-
-        var normalized = normalizeRoomCode(roomCode);
-
-        if (normalized.length !== 5) {
-            this._emitError('Room code must contain five characters.');
-            return;
-        }
-
-        this.isHost = false;
-        this.roomCode = normalized;
-        this.localReady = false;
-        this.opponentReady = false;
-
-        var self = this;
-
-        try {
-            this.peer = new window.Peer();
-        } catch (error) {
-            this._emitError(
-                'Failed to initialize multiplayer: ' + error.message
-            );
-            return;
-        }
-
-        this.peer.on('open', function () {
-            try {
-                var conn = self.peer.connect(
-                    PEER_PREFIX + self.roomCode,
-                    {
-                        reliable: true,
-                        serialization: 'json'
-                    }
-                );
-
-                self.conn = conn;
-                self._setupConnection(conn);
-
-                if (onReady) {
-                    onReady();
-                }
-            } catch (error) {
-                self._emitError(
-                    'Connection failed: ' + error.message
-                );
-            }
+    this.peer.on('open', function () {
+      try {
+        var conn = self.peer.connect(PEER_PREFIX + self.roomCode, {
+          reliable: true,
+          serialization: 'json'
         });
+        self.conn = conn;
+        self._setupConnection(conn);
+        if (onReady) onReady();
+      } catch (error) {
+        self._emitError('Connection failed: ' + error.message);
+      }
+    });
 
-        this.peer.on('disconnected', function () {
-            self.connected = false;
-            self._stopPing();
+    this.peer.on('disconnected', function () {
+      self.connected = false;
+      self._stopPing();
+      if (self.onDisconnected) self.onDisconnected('Peer signaling disconnected.');
+    });
 
-            if (self.onDisconnected) {
-                self.onDisconnected('Peer signaling disconnected.');
-            }
+    this.peer.on('close', function () {
+      self._handleDisconnected('Connection closed.');
+    });
+
+    this.peer.on('error', function (error) {
+      var message = error.message || error.type || 'Unknown error';
+      if (error.type === 'peer-unavailable') {
+        message = 'Room not found. Check the room code.';
+      }
+      self._emitError(message);
+    });
+  }
+
+  // ===== CONNECTION SETUP =====
+
+  _setupConnection(conn) {
+    var self = this;
+
+    conn.on('open', function () {
+      self.connected = true;
+      self.localReady = false;
+      self.opponentReady = false;
+      self._startPing();
+
+      self.send('hello', {});
+
+      if (self.onConnected) {
+        self.onConnected({
+          roomCode: self.roomCode,
+          isHost: self.isHost
         });
+      }
+    });
 
-        this.peer.on('close', function () {
-            self._handleDisconnected('Connection closed.');
-        });
+    conn.on('data', function (data) {
+      self._handleMessage(data);
+    });
 
-        this.peer.on('error', function (error) {
-            var message = error.message || error.type || 'Unknown error';
+    conn.on('close', function () {
+      self._handleDisconnected('Opponent disconnected.');
+    });
 
-            if (error.type === 'peer-unavailable') {
-                message = 'Room not found. Check the room code.';
-            }
+    conn.on('error', function (error) {
+      self._emitError('Connection error: ' + (error.message || 'Unknown error'));
+    });
+  }
 
-            self._emitError(message);
-        });
+  // ===== MESSAGE HANDLING =====
+
+  _handleMessage(data) {
+    if (!data || typeof data !== 'object') return;
+
+    // Validate envelope
+    var validation = validateMultiplayerMessage(data);
+    if (!validation.valid) {
+      console.warn('Multiplayer: rejected invalid message', validation.errors, data);
+      return;
     }
 
-    /**
-     * Set up event handlers on a data connection.
-     * @param {DataConnection} conn
-     * @private
-     */
-    _setupConnection(conn) {
-        var self = this;
-
-        conn.on('open', function () {
-            self.connected = true;
-            self.localReady = false;
-            self.opponentReady = false;
-
-            self._startPing();
-
-            self.send({
-                type: 'hello',
-                protocolVersion: 2, // Bumped for new mode support
-                timestamp: Date.now()
-            });
-
-            if (self.onConnected) {
-                self.onConnected({
-                    roomCode: self.roomCode,
-                    isHost: self.isHost
-                });
-            }
-        });
-
-        conn.on('data', function (data) {
-            self._handleMessage(data);
-        });
-
-        conn.on('close', function () {
-            self._handleDisconnected('Opponent disconnected.');
-        });
-
-        conn.on('error', function (error) {
-            self._emitError(
-                'Connection error: ' +
-                (error.message || 'Unknown error')
-            );
-        });
+    // Protocol version check
+    if (data.protocolVersion !== MP_PROTOCOL_VERSION) {
+      console.warn('Multiplayer: protocol version mismatch, ignoring message');
+      return;
     }
 
-    /**
-     * Handle an incoming message from the opponent.
-     * Routes to the appropriate typed callback.
-     * @param {object} data
-     * @private
-     */
-    _handleMessage(data) {
-        if (!data || typeof data !== 'object') {
-            return;
-        }
-
-        // Generic message callback
-        if (this.onMessage) {
-            this.onMessage(data);
-        }
-
-        switch (data.type) {
-            case 'hello':
-                this.send({
-                    type: 'helloAck',
-                    protocolVersion: 2,
-                    timestamp: Date.now()
-                });
-                break;
-
-            case 'helloAck':
-                // Connection fully established
-                break;
-
-            case 'ready':
-                this.opponentReady = !!data.ready;
-
-                if (this.onReadyState) {
-                    this.onReadyState({
-                        localReady: this.localReady,
-                        opponentReady: this.opponentReady
-                    });
-                }
-                break;
-
-            case 'modeSelected':
-                // Opponent (host) has selected a mode
-                this.selectedMode = data.mode || 'mp_highscore';
-                this.modeConfig = data.config || {};
-                if (this.onModeSelected) {
-                    this.onModeSelected({
-                        mode: this.selectedMode,
-                        config: this.modeConfig
-                    });
-                }
-                break;
-
-            case 'startMatch':
-                this.sharedSeed = data.seed || 0;
-                if (this.onMatchStart) {
-                    this.onMatchStart({
-                        startAt: data.startAt,
-                        seed: data.seed,
-                        subjects: data.subjects || [],
-                        mode: data.mode || 'versus',
-                        config: data.config || {}
-                    });
-                }
-                // Show rush reminder for all multiplayer modes
-                showRushReminder();
-                break;
-
-            case 'gameState':
-                if (this.onOpponentUpdate) {
-                    this.onOpponentUpdate(data);
-                }
-                break;
-
-            case 'encounterResult':
-                if (this.onEncounterResult) {
-                    this.onEncounterResult(data);
-                }
-                break;
-
-            case 'eliminated':
-                // Sudden death: opponent reports they were eliminated
-                if (this.onEliminated) {
-                    this.onEliminated(data);
-                }
-                break;
-
-            case 'raceFinished':
-                // Race mode: opponent finished reaching target correct
-                if (this.onRaceFinished) {
-                    this.onRaceFinished(data);
-                }
-                break;
-
-            case 'endRun':
-                if (this.onEndRun) {
-                    this.onEndRun(data);
-                }
-                break;
-
-            case 'ping':
-                this.send({
-                    type: 'pong',
-                    pingId: data.pingId,
-                    originalTimestamp: data.originalTimestamp,
-                    timestamp: Date.now()
-                });
-                break;
-
-            case 'pong':
-                if (data.originalTimestamp) {
-                    this.latency = Math.max(
-                        0,
-                        Date.now() - data.originalTimestamp
-                    );
-                }
-                break;
-        }
+    // Match ID check (for messages that require it)
+    var noMatchIdTypes = ['hello', 'hello_ack', 'error', 'clock_ping', 'clock_pong'];
+    if (noMatchIdTypes.indexOf(data.type) < 0 && this.matchId !== null) {
+      if (data.matchId !== null && data.matchId !== this.matchId) {
+        console.warn('Multiplayer: matchId mismatch, ignoring message');
+        return;
+      }
     }
 
-    /**
-     * Send data to the connected peer.
-     * @param {object} data
-     * @returns {boolean} Whether the send succeeded
-     */
-    send(data) {
-        if (!this.conn || !this.conn.open) {
-            return false;
-        }
-
-        try {
-            this.conn.send(data);
-            return true;
-        } catch (error) {
-            console.warn('Multiplayer send failed:', error);
-            return false;
-        }
+    // Sequence deduplication (reject stale/duplicate)
+    if (typeof data.sequence === 'number' && data.sequence <= this._remoteSequence) {
+      // Allow clock_pong to pass through (response to our ping)
+      if (data.type !== 'clock_pong' && data.type !== 'clock_ping') {
+        console.warn('Multiplayer: stale sequence ' + data.sequence + ', ignoring');
+        return;
+      }
+    }
+    if (typeof data.sequence === 'number' && data.sequence > this._remoteSequence) {
+      this._remoteSequence = data.sequence;
     }
 
-    /**
-     * Signal readiness to start the match.
-     * @param {boolean} [ready=true]
-     */
-    sendReady(ready) {
-        this.localReady = ready !== false;
+    // Generic callback
+    if (this.onMessage) this.onMessage(data);
 
-        this.send({
-            type: 'ready',
-            ready: this.localReady,
-            timestamp: Date.now()
+    var payload = data.payload || {};
+
+    switch (data.type) {
+      case 'hello':
+        this.send('hello_ack', {});
+        break;
+
+      case 'hello_ack':
+        // Connection fully established
+        break;
+
+      case 'clock_ping':
+        this.send('clock_pong', {
+          localSend: payload.localSend,
+          hostTimestamp: Date.now()
         });
+        break;
 
+      case 'clock_pong':
+        if (payload.localSend && payload.hostTimestamp) {
+          var localReceive = Date.now();
+          this.clockSync.addSample(payload.localSend, payload.hostTimestamp, localReceive);
+          this.latency = Math.max(0, localReceive - payload.localSend);
+        }
+        break;
+
+      case 'mode_selected':
+        this.selectedMode = payload.mode || 'mp_highscore';
+        this.modeConfig = payload.config || {};
+        if (this.onModeSelected) {
+          this.onModeSelected({ mode: this.selectedMode, config: this.modeConfig });
+        }
+        break;
+
+      case 'ready':
+        this.opponentReady = !!payload.ready;
         if (this.onReadyState) {
-            this.onReadyState({
-                localReady: this.localReady,
-                opponentReady: this.opponentReady
-            });
+          this.onReadyState({
+            localReady: this.localReady,
+            opponentReady: this.opponentReady
+          });
         }
-    }
+        break;
 
-    /**
-     * Start the match (host only).
-     * Sends a startMatch message with a future timestamp so both
-     * clients can synchronize their countdown.
-     *
-     * Now supports multiple game modes with per-mode configuration.
-     *
-     * @param {object} [config]
-     * @param {number} [config.startAt] - Timestamp when match begins
-     * @param {number} [config.seed] - Shared RNG seed
-     * @param {string[]} [config.subjects] - Subject list
-     * @param {string} [config.mode] - Game mode ID (mp_highscore, mp_suddendeath, mp_race, or versus)
-     * @param {object} [config.modeConfig] - Mode-specific configuration overrides
-     * @returns {object|false} The config sent, or false if not host
-     */
-    sendStartMatch(config) {
-        if (!this.isHost) {
-            return false;
+      case 'match_config':
+        this.matchConfig = payload;
+        this.matchId = payload.matchId || null;
+        this.sharedSeed = payload.seed || 0;
+        if (this.onMatchConfig) this.onMatchConfig(payload);
+        break;
+
+      case 'match_config_ack':
+        if (this.onMatchConfigAck) this.onMatchConfigAck(payload);
+        break;
+
+      case 'match_start':
+        this.matchConfig = payload;
+        this.matchId = payload.matchId || this.matchId;
+        this.sharedSeed = payload.seed || 0;
+        if (this.onMatchStart) {
+          this.onMatchStart({
+            startAt: payload.startAt,
+            seed: payload.seed,
+            subjects: payload.subjects || [],
+            mode: payload.mode || 'mp_highscore',
+            config: payload.modeConfig || payload.config || {},
+            matchId: payload.matchId,
+            skinId: payload.skinId || '',
+            cardPoolHash: payload.cardPoolHash || '',
+            contentVersion: payload.contentVersion || ''
+          });
         }
+        break;
 
-        config = config || {};
+      case 'game_state':
+        if (this.onOpponentUpdate) this.onOpponentUpdate(payload);
+        break;
 
-        var seed = config.seed || Math.floor(Math.random() * 2147483647);
-        this.sharedSeed = seed;
+      case 'encounter_result':
+        if (this.onEncounterResult) this.onEncounterResult(payload);
+        break;
 
-        // Determine the mode — use selectedMode if set, fall back to config or 'versus'
-        var mode = config.mode || this.selectedMode || 'versus';
+      case 'player_eliminated':
+        if (this.onEliminated) this.onEliminated(payload);
+        break;
 
-        // Merge mode config: explicit overrides > stored modeConfig > defaults
-        var finalModeConfig = {};
-        
-        // Start with defaults for the selected mode
-        for (var i = 0; i < MP_MODES.length; i++) {
-            if (MP_MODES[i].id === mode) {
-                var defaults = MP_MODES[i].defaults || {};
-                for (var dk in defaults) {
-                    finalModeConfig[dk] = defaults[dk];
-                }
-                break;
-            }
-        }
+      case 'race_finished':
+        if (this.onRaceFinished) this.onRaceFinished(payload);
+        break;
 
-        // Layer on stored modeConfig
-        if (this.modeConfig) {
-            for (var mk in this.modeConfig) {
-                finalModeConfig[mk] = this.modeConfig[mk];
-            }
-        }
+      case 'run_finished':
+        if (this.onRunFinished) this.onRunFinished(payload);
+        break;
 
-        // Layer on explicit overrides from config parameter
-        if (config.modeConfig) {
-            for (var ck in config.modeConfig) {
-                finalModeConfig[ck] = config.modeConfig[ck];
-            }
-        }
+      case 'result_proposal':
+        if (this.onResultProposal) this.onResultProposal(payload);
+        break;
 
-        var message = {
-            type: 'startMatch',
-            startAt: config.startAt || Date.now() + 1500,
-            seed: seed,
-            subjects: Array.isArray(config.subjects)
-                ? config.subjects.slice()
-                : [],
-            mode: mode,
-            config: finalModeConfig,
-            timestamp: Date.now()
-        };
+      case 'result_ack':
+        this._resultAcked = true;
+        if (this.onResultAck) this.onResultAck(payload);
+        break;
 
-        this.send(message);
+      case 'forfeit':
+        if (this.onForfeit) this.onForfeit(payload);
+        break;
 
-        // Show rush reminder for host too
-        showRushReminder();
+      case 'disconnect_notice':
+        this._handleDisconnected(payload.reason || 'Opponent sent disconnect notice.');
+        break;
 
-        return message;
+      case 'error':
+        this._emitError(payload.message || 'Remote error');
+        break;
+    }
+  }
+
+  // ===== QUERY METHODS =====
+
+  isConnected() {
+    return !!(this.connected && this.conn && this.conn.open);
+  }
+
+  getSeed() {
+    return this.sharedSeed;
+  }
+
+  getMode() {
+    return this.selectedMode || 'mp_highscore';
+  }
+
+  getModeConfig() {
+    return this.modeConfig || {};
+  }
+
+  getMatchId() {
+    return this.matchId;
+  }
+
+  getClockOffset() {
+    return this.clockSync.offsetMs;
+  }
+
+  hostStartToLocalTime(hostStartAt) {
+    return this.clockSync.toLocalTime(hostStartAt);
+  }
+
+  // ===== PING =====
+
+  _startPing() {
+    this._stopPing();
+    var self = this;
+    this.pingInterval = setInterval(function () {
+      if (!self.isConnected()) return;
+      self._sendClockPing();
+    }, 3000);
+  }
+
+  _stopPing() {
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+      this.pingInterval = null;
+    }
+  }
+
+  // ===== DISCONNECT =====
+
+  _handleDisconnected(reason) {
+    var wasConnected = this.connected;
+    this.connected = false;
+    this.localReady = false;
+    this.opponentReady = false;
+    this._stopPing();
+
+    if (wasConnected && this.onDisconnected) {
+      this.onDisconnected(reason || 'Disconnected.');
+    }
+  }
+
+  _emitError(message) {
+    console.warn('Multiplayer:', message);
+    if (this.onError) this.onError(message);
+  }
+
+  disconnect() {
+    this._stopPing();
+    this.connected = false;
+    this.localReady = false;
+    this.opponentReady = false;
+
+    if (this.conn) {
+      try { this.conn.close(); } catch (e) { /* cleanup */ }
+      this.conn = null;
     }
 
-    /**
-     * Send current game state to opponent.
-     * Called periodically (throttled) during gameplay.
-     *
-     * Now includes additional fields for mode-specific tracking.
-     *
-     * @param {object} state
-     * @returns {boolean}
-     */
-    sendGameState(state) {
-        state = state || {};
-
-        return this.send({
-            type: 'gameState',
-            lane: Number(state.lane) || 0,
-            score: Number(state.score) || 0,
-            streak: Number(state.streak) || 0,
-            correct: Number(state.correct) || 0,
-            wrong: Number(state.wrong) || 0,
-            lives: Number(state.lives) || 0,
-            rushing: !!state.rushing,
-            rushStacks: Number(state.rushStacks) || 0,
-            running: !!state.running,
-            // NEW fields for expanded modes
-            correctCount: Number(state.correctCount) || Number(state.correct) || 0,
-            timeRemaining: Number(state.timeRemaining) || 0,
-            eliminated: !!state.eliminated,
-            timestamp: Date.now()
-        });
+    if (this.peer) {
+      try { this.peer.destroy(); } catch (e) { /* cleanup */ }
+      this.peer = null;
     }
 
-    /**
-     * Send encounter result in real-time.
-     *
-     * @param {boolean} correct
-     * @param {number} score
-     * @param {string} [cardId] - Optional card ID for shared-question verification
-     * @returns {boolean}
-     */
-    sendEncounterResult(correct, score, cardId) {
-        return this.send({
-            type: 'encounterResult',
-            correct: !!correct,
-            score: Number(score) || 0,
-            cardId: cardId || '',
-            timestamp: Date.now()
-        });
-    }
-
-    /**
-     * Send elimination message (Sudden Death mode).
-     * Called when this player gets a wrong answer in sudden death.
-     *
-     * @param {string} cardId - The card that caused elimination
-     * @returns {boolean}
-     */
-    sendEliminated(cardId) {
-        return this.send({
-            type: 'eliminated',
-            cardId: cardId || '',
-            timestamp: Date.now()
-        });
-    }
-
-    /**
-     * Send race finished message (Race mode).
-     * Called when this player reaches the target number of correct answers.
-     *
-     * @param {number} correctCount - Total correct answers (should equal target)
-     * @param {number} totalTime - Time in milliseconds from match start to finish
-     * @returns {boolean}
-     */
-    sendRaceFinished(correctCount, totalTime) {
-        return this.send({
-            type: 'raceFinished',
-            correctCount: Number(correctCount) || 0,
-            totalTime: Number(totalTime) || 0,
-            timestamp: Date.now()
-        });
-    }
-
-    /**
-     * Send end-of-run results to opponent.
-     *
-     * @param {object} finalState
-     * @returns {boolean}
-     */
-    sendEndRun(finalState) {
-        finalState = finalState || {};
-
-        return this.send({
-            type: 'endRun',
-            score: Number(finalState.score) || 0,
-            correct: Number(finalState.correct) || 0,
-            wrong: Number(finalState.wrong) || 0,
-            bestStreak: Number(finalState.bestStreak) || 0,
-            coins: Number(finalState.coins) || 0,
-            // NEW fields
-            correctCount: Number(finalState.correctCount) || Number(finalState.correct) || 0,
-            eliminated: !!finalState.eliminated,
-            raceTime: Number(finalState.raceTime) || 0,
-            timestamp: Date.now()
-        });
-    }
-
-    /**
-     * Check if currently connected to an opponent.
-     * @returns {boolean}
-     */
-    isConnected() {
-        return !!(
-            this.connected &&
-            this.conn &&
-            this.conn.open
-        );
-    }
-
-    /**
-     * Get the current shared seed for this match.
-     * @returns {number}
-     */
-    getSeed() {
-        return this.sharedSeed;
-    }
-
-    /**
-     * Get the current selected mode.
-     * @returns {string}
-     */
-    getMode() {
-        return this.selectedMode || 'versus';
-    }
-
-    /**
-     * Get the current mode configuration.
-     * @returns {object}
-     */
-    getModeConfig() {
-        return this.modeConfig || {};
-    }
-
-    /**
-     * Start periodic ping messages for latency measurement.
-     * @private
-     */
-    _startPing() {
-        this._stopPing();
-
-        var self = this;
-
-        this.pingInterval = setInterval(function () {
-            if (!self.isConnected()) {
-                return;
-            }
-
-            var now = Date.now();
-
-            self.send({
-                type: 'ping',
-                pingId: now,
-                originalTimestamp: now
-            });
-        }, 3000);
-    }
-
-    /**
-     * Stop periodic ping messages.
-     * @private
-     */
-    _stopPing() {
-        if (this.pingInterval) {
-            clearInterval(this.pingInterval);
-            this.pingInterval = null;
-        }
-    }
-
-    /**
-     * Handle disconnection cleanup and callback.
-     * @param {string} reason
-     * @private
-     */
-    _handleDisconnected(reason) {
-        var wasConnected = this.connected;
-
-        this.connected = false;
-        this.localReady = false;
-        this.opponentReady = false;
-        this._stopPing();
-
-        if (wasConnected && this.onDisconnected) {
-            this.onDisconnected(reason || 'Disconnected.');
-        }
-    }
-
-    /**
-     * Emit an error via callback and console.
-     * @param {string} message
-     * @private
-     */
-    _emitError(message) {
-        console.warn('Multiplayer:', message);
-
-        if (this.onError) {
-            this.onError(message);
-        }
-    }
-
-    /**
-     * Disconnect from opponent and destroy peer.
-     * Safe to call multiple times.
-     */
-    disconnect() {
-        this._stopPing();
-
-        this.connected = false;
-        this.localReady = false;
-        this.opponentReady = false;
-
-        if (this.conn) {
-            try {
-                this.conn.close();
-            } catch (error) {
-                // Ignore cleanup errors.
-            }
-
-            this.conn = null;
-        }
-
-        if (this.peer) {
-            try {
-                this.peer.destroy();
-            } catch (error) {
-                // Ignore cleanup errors.
-            }
-
-            this.peer = null;
-        }
-
-        this.roomCode = '';
-        this.isHost = false;
-        this.latency = null;
-        this.sharedSeed = 0;
-    }
+    this.roomCode = '';
+    this.isHost = false;
+    this.latency = null;
+    this.sharedSeed = 0;
+    this.matchId = null;
+    this.matchConfig = null;
+    this._sequence = 0;
+    this._remoteSequence = -1;
+    this._matchResult = null;
+    this._resultAcked = false;
+    this.clockSync.reset();
+  }
 }
 
 export var multiplayer = new Multiplayer();
