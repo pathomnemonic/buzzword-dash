@@ -2,6 +2,7 @@
  * skins.js — Track skin definitions
  *
  * Each skin defines:
+ * - id: stable deterministic identifier for multiplayer skin selection
  * - name/desc: display info
  * - wallType: geometry style for side walls
  * - archType: geometry style for overhead structures
@@ -9,25 +10,22 @@
  * - particleType: floating atmospheric elements
  * - colors: complete color palette for the environment
  *
- * A random skin is selected at the start of each run,
- * making every session feel visually fresh.
- *
- * The approach follows the biome-based content generation
- * pattern where "assets repository is automatically indexed
- * creating a stubs LUT of the IDs and their biome values,
- * so they can be naturally selected by the biome data" [12].
- * Each skin acts as biome data constraining which geometry
- * builders are used from skinbuilders.js.
+ * ARCHITECTURE CONTRACT (§23):
+ * - Each skin has a stable `id` for deterministic selection.
+ * - getRandomSkin() uses Math.random() for solo play.
+ * - getSkinById() supports deterministic multiplayer selection.
+ * - getSkinByName() supports legacy lookups.
  */
 
 export var SKINS = [
   {
-    name: "Neural Highway",
-    desc: "Race through neural pathways",
-    wallType: "organic_tubes",
-    archType: "synapse_arcs",
-    groundType: "myelin",
-    particleType: "sparks",
+    id: 'skin_neural_highway',
+    name: 'Neural Highway',
+    desc: 'Race through neural pathways',
+    wallType: 'organic_tubes',
+    archType: 'synapse_arcs',
+    groundType: 'myelin',
+    particleType: 'sparks',
     colors: {
       bg: 0x08061e, sky: 0x0a0828,
       ground: 0x1a1050, groundStripe: 0x3020aa, groundAccent: 0x2818cc,
@@ -42,12 +40,13 @@ export var SKINS = [
     }
   },
   {
-    name: "Vascular Rush",
-    desc: "Sprint through the bloodstream",
-    wallType: "artery_walls",
-    archType: "capillary_branches",
-    groundType: "endothelium",
-    particleType: "blood_cells",
+    id: 'skin_vascular_rush',
+    name: 'Vascular Rush',
+    desc: 'Sprint through the bloodstream',
+    wallType: 'artery_walls',
+    archType: 'capillary_branches',
+    groundType: 'endothelium',
+    particleType: 'blood_cells',
     colors: {
       bg: 0x140606, sky: 0x1a0808,
       ground: 0x300a0a, groundStripe: 0xaa2020, groundAccent: 0xcc3030,
@@ -62,12 +61,13 @@ export var SKINS = [
     }
   },
   {
-    name: "Skeletal Corridor",
-    desc: "Race through a giant ribcage",
-    wallType: "bone_pillars",
-    archType: "rib_arches",
-    groundType: "cartilage",
-    particleType: "calcium_dust",
+    id: 'skin_skeletal_corridor',
+    name: 'Skeletal Corridor',
+    desc: 'Race through a giant ribcage',
+    wallType: 'bone_pillars',
+    archType: 'rib_arches',
+    groundType: 'cartilage',
+    particleType: 'calcium_dust',
     colors: {
       bg: 0x0e0c0a, sky: 0x141210,
       ground: 0x201c18, groundStripe: 0x887766, groundAccent: 0xaa9988,
@@ -82,12 +82,13 @@ export var SKINS = [
     }
   },
   {
-    name: "Cellular Matrix",
-    desc: "Shrink inside a living cell",
-    wallType: "membrane",
-    archType: "organelle_bridges",
-    groundType: "cytoplasm",
-    particleType: "vesicles",
+    id: 'skin_cellular_matrix',
+    name: 'Cellular Matrix',
+    desc: 'Shrink inside a living cell',
+    wallType: 'membrane',
+    archType: 'organelle_bridges',
+    groundType: 'cytoplasm',
+    particleType: 'vesicles',
     colors: {
       bg: 0x031508, sky: 0x041a10,
       ground: 0x062818, groundStripe: 0x22aa55, groundAccent: 0x33cc66,
@@ -102,12 +103,13 @@ export var SKINS = [
     }
   },
   {
-    name: "Neon ER",
-    desc: "Emergency room at midnight",
-    wallType: "hospital_panels",
-    archType: "fluorescent_bars",
-    groundType: "linoleum",
-    particleType: "dust_motes",
+    id: 'skin_neon_er',
+    name: 'Neon ER',
+    desc: 'Emergency room at midnight',
+    wallType: 'hospital_panels',
+    archType: 'fluorescent_bars',
+    groundType: 'linoleum',
+    particleType: 'dust_motes',
     colors: {
       bg: 0x060a14, sky: 0x080c18,
       ground: 0x101828, groundStripe: 0x2244aa, groundAccent: 0x3355cc,
@@ -122,12 +124,13 @@ export var SKINS = [
     }
   },
   {
-    name: "DNA Helix Tunnel",
-    desc: "Spiral through the double helix",
-    wallType: "helix_strands",
-    archType: "base_pair_rungs",
-    groundType: "phosphate",
-    particleType: "nucleotides",
+    id: 'skin_dna_helix_tunnel',
+    name: 'DNA Helix Tunnel',
+    desc: 'Spiral through the double helix',
+    wallType: 'helix_strands',
+    archType: 'base_pair_rungs',
+    groundType: 'phosphate',
+    particleType: 'nucleotides',
     colors: {
       bg: 0x030614, sky: 0x040818,
       ground: 0x081030, groundStripe: 0x2244cc, groundAccent: 0x3366ee,
@@ -142,12 +145,13 @@ export var SKINS = [
     }
   },
   {
-    name: "Prescription Sunset",
-    desc: "Warm pharmacy vibes",
-    wallType: "pill_shelves",
-    archType: "rx_signs",
-    groundType: "pharmacy_floor",
-    particleType: "capsule_bits",
+    id: 'skin_prescription_sunset',
+    name: 'Prescription Sunset',
+    desc: 'Warm pharmacy vibes',
+    wallType: 'pill_shelves',
+    archType: 'rx_signs',
+    groundType: 'pharmacy_floor',
+    particleType: 'capsule_bits',
     colors: {
       bg: 0x140a03, sky: 0x1a0c04,
       ground: 0x281808, groundStripe: 0xcc7722, groundAccent: 0xee9933,
@@ -162,12 +166,13 @@ export var SKINS = [
     }
   },
   {
-    name: "Cardiac Pulse",
-    desc: "Inside a beating heart",
-    wallType: "muscle_fibers",
-    archType: "valve_leaflets",
-    groundType: "endocardium",
-    particleType: "platelets",
+    id: 'skin_cardiac_pulse',
+    name: 'Cardiac Pulse',
+    desc: 'Inside a beating heart',
+    wallType: 'muscle_fibers',
+    archType: 'valve_leaflets',
+    groundType: 'endocardium',
+    particleType: 'platelets',
     colors: {
       bg: 0x12030c, sky: 0x1a0410,
       ground: 0x2a0818, groundStripe: 0xdd2255, groundAccent: 0xff3366,
@@ -182,12 +187,13 @@ export var SKINS = [
     }
   },
   {
-    name: "Surgical Theater",
-    desc: "Under the bright OR lights",
-    wallType: "sterile_panels",
-    archType: "surgical_lamps",
-    groundType: "surgical_floor",
-    particleType: "sterile_sparkles",
+    id: 'skin_surgical_theater',
+    name: 'Surgical Theater',
+    desc: 'Under the bright OR lights',
+    wallType: 'sterile_panels',
+    archType: 'surgical_lamps',
+    groundType: 'surgical_floor',
+    particleType: 'sterile_sparkles',
     colors: {
       bg: 0x071012, sky: 0x0a1418,
       ground: 0x102028, groundStripe: 0x22aa88, groundAccent: 0x33ccaa,
@@ -202,12 +208,13 @@ export var SKINS = [
     }
   },
   {
-    name: "Candy Lab",
-    desc: "Chemistry experiment gone wild",
-    wallType: "test_tubes",
-    archType: "bubble_arches",
-    groundType: "petri_dish",
-    particleType: "bubbles",
+    id: 'skin_candy_lab',
+    name: 'Candy Lab',
+    desc: 'Chemistry experiment gone wild',
+    wallType: 'test_tubes',
+    archType: 'bubble_arches',
+    groundType: 'petri_dish',
+    particleType: 'bubbles',
     colors: {
       bg: 0x0c0312, sky: 0x100418,
       ground: 0x1a0828, groundStripe: 0xcc44cc, groundAccent: 0xee66ee,
@@ -222,12 +229,13 @@ export var SKINS = [
     }
   },
   {
-    name: "X-Ray Vision",
-    desc: "See through everything",
-    wallType: "skeletal_xray",
-    archType: "scan_frames",
-    groundType: "lightbox",
-    particleType: "photons",
+    id: 'skin_xray_vision',
+    name: 'X-Ray Vision',
+    desc: 'See through everything',
+    wallType: 'skeletal_xray',
+    archType: 'scan_frames',
+    groundType: 'lightbox',
+    particleType: 'photons',
     colors: {
       bg: 0x000810, sky: 0x000a14,
       ground: 0x041420, groundStripe: 0x0088bb, groundAccent: 0x00aadd,
@@ -242,12 +250,13 @@ export var SKINS = [
     }
   },
   {
-    name: "Defibrillator Shock",
-    desc: "Electric urgency",
-    wallType: "circuit_panels",
-    archType: "tesla_arcs",
-    groundType: "conductor_grid",
-    particleType: "electric_arcs",
+    id: 'skin_defibrillator_shock',
+    name: 'Defibrillator Shock',
+    desc: 'Electric urgency',
+    wallType: 'circuit_panels',
+    archType: 'tesla_arcs',
+    groundType: 'conductor_grid',
+    particleType: 'electric_arcs',
     colors: {
       bg: 0x100e03, sky: 0x141204,
       ground: 0x201c08, groundStripe: 0xccaa22, groundAccent: 0xeecc33,
@@ -265,18 +274,41 @@ export var SKINS = [
 
 /**
  * Pick a random skin from the available pool.
- * Called at the start of each run.
+ * Called at the start of each solo run.
  */
 export function getRandomSkin() {
   return SKINS[Math.floor(Math.random() * SKINS.length)];
 }
 
 /**
- * Get a specific skin by name.
+ * Get a specific skin by name (legacy support).
+ * @param {string} name
+ * @returns {object}
  */
 export function getSkinByName(name) {
   for (var i = 0; i < SKINS.length; i++) {
     if (SKINS[i].name === name) return SKINS[i];
   }
   return SKINS[0];
+}
+
+/**
+ * Get a specific skin by stable ID.
+ * Used for deterministic multiplayer skin selection.
+ * @param {string} skinId
+ * @returns {object}
+ */
+export function getSkinById(skinId) {
+  for (var i = 0; i < SKINS.length; i++) {
+    if (SKINS[i].id === skinId) return SKINS[i];
+  }
+  return SKINS[0];
+}
+
+/**
+ * Get all skin IDs (for multiplayer skin selection).
+ * @returns {string[]}
+ */
+export function getAllSkinIds() {
+  return SKINS.map(function (s) { return s.id; });
 }
