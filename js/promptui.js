@@ -1,0 +1,225 @@
+/**
+ * promptui.js — the small card on the results screen that asks to share, rate, or make an account.
+ * What to ask, and when, is decided in prompts.js.
+ */
+
+import { track, shareLink } from './analytics/index.js';
+import { choosePrompt, recordPrompt } from './prompts.js';
+import { canRate, rateTheApp, openStorePage, storeLinks } from './review.js';
+import { buildFeedbackForm } from './feedback.js';
+import { appPublicUrl } from './publicurl.js';
+import { shareText, canShareNatively } from './platform.js';
+import { getNativePlatform } from './native.js';
+
+/** The first page the app could send a rating to ('' when there is nowhere to: the plain web with no link set). Kept for the checks in prompts.js. */
+export function getReviewUrl() {
+  return storeLinks()[0] || (canRate() ? 'in-app' : '');
+}
+
+/** The link to send friends to: always an address a friend can open (see publicurl.js). */
+export function getShareUrl() {
+  return appPublicUrl();
+}
+
+var SHARE_TEXT = 'I have been studying with Dx Dash, a free endless runner for USMLE and COMLEX questions. Come run the list with me.';
+
+/** Share the game: the system share sheet if there is one, otherwise copy the link. @returns {Promise<'shared'|'copied'|'failed'>} */
+export function shareGame() {
+  var url = getShareUrl();
+  return shareText({ title: 'Dx Dash', text: SHARE_TEXT, url: url ? shareLink(url, 'app') : undefined, kind: 'app', surface: 'postrun' });
+}
+
+export function canShareGame() {
+  return canShareNatively() || !!getShareUrl();
+}
+
+var _bannerDismissed = false;
+
+/**
+ * On the Profile tab: while signed out, a card at the top invites the player to make an account.
+ * "Not now" hides it until the app is reopened; it never appears once they are signed in.
+ * @returns {boolean} whether the card was added
+ */
+export function attachAccountBanner(deps) {
+  if (_bannerDismissed || deps.signedIn || !deps.accountsAvailable || !deps.container) return false;
+  if (deps.container.querySelector('.account-banner')) return false;
+  var box = document.createElement('div');
+  box.className = 'prompt-card account-banner';
+  var text = document.createElement('div');
+  text.className = 'prompt-text';
+  text.textContent = 'Create a free account to keep your progress safe, sync it between devices and join the leaderboards.';
+  box.appendChild(text);
+  var row = document.createElement('div');
+  row.className = 'prompt-row';
+  var go = document.createElement('button');
+  go.type = 'button';
+  go.className = 'btn btn-sm btn-gold';
+  go.textContent = '👤 Create account';
+  go.addEventListener('click', function () { deps.openAccount(); });
+  var later = document.createElement('button');
+  later.type = 'button';
+  later.className = 'btn btn-sm btn-outline';
+  later.textContent = 'Not now';
+  later.addEventListener('click', function () { _bannerDismissed = true; box.remove(); });
+  row.appendChild(go);
+  row.appendChild(later);
+  box.appendChild(row);
+  deps.container.insertBefore(box, deps.container.firstChild);
+  return true;
+}
+
+function isIosBuild() {
+  return storeLinks().some(function (u) { return /apple\.com/.test(u); });
+}
+
+var COPY = {
+  account: {
+    text: 'Your progress is saved on this device only. Make a free account to keep it safe and to appear on the leaderboards.',
+    action: '👤 Make an account'
+  },
+  share: {
+    text: 'Know someone who is studying for boards? Send them Dx Dash. It is free.',
+    action: '📣 Share with a friend'
+  },
+  review: {
+    text: 'Are you enjoying Dx Dash?',
+    action: '😀 Yes, loving it'
+  }
+};
+
+/**
+ * Show at most one ask on the results screen.
+ * @param {object} deps
+ * @param {HTMLElement} deps.container
+ * @param {object} deps.storage
+ * @param {object} deps.run  { correct, accuracy, newBest }
+ * @param {boolean} deps.signedIn
+ * @param {boolean} deps.accountsAvailable
+ * @param {function(): void} deps.openAccount
+ * @param {function(string): void} deps.toast
+ * @param {function(object): Promise<{success: boolean}>} [deps.sendFeedback] sends feedback to the backend (the form falls back to email, then copy)
+ * @returns {string|null} the kind that was shown
+ */
+export function attachPromptCard(deps) {
+  var storage = deps.storage;
+  var now = Date.now();
+  var firstRunAt = storage.get('firstRunAt') || 0;
+  var state = storage.get('promptState') || {};
+  var kind = choosePrompt({
+    now: now,
+    totalRuns: storage.get('runsFinished') || 0,
+    firstRunAt: firstRunAt,
+    correct: deps.run.correct,
+    accuracy: deps.run.accuracy,
+    newBest: !!deps.run.newBest,
+    streak: (storage.getStreakStatus && storage.getStreakStatus().streak) || 0,
+    signedIn: deps.signedIn,
+    accountsAvailable: deps.accountsAvailable,
+    canShare: canShareGame(),
+    reviewUrl: canRate() ? getReviewUrl() || 'in-app' : '',
+    state: state
+  });
+  if (!kind) return null;
+  storage.set('promptState', recordPrompt(state, kind, 'shown', now));
+  var promptFacts = { trigger: 'postrun', runs_total: storage.get('runsFinished') || 0, days_since_install: firstRunAt ? Math.floor((now - firstRunAt) / 86400000) : 0 };
+  if (kind === 'review') track('rating_prompt', Object.assign({ step: 'shown' }, promptFacts));
+  else track('nudge_shown', { kind: kind });
+
+  var copy = COPY[kind];
+  // Apple's rules (5.6.1) ask apps to use the system rating box and not to screen people by mood first, so on iPhone the
+  // rating ask is one plain step, and feedback is a separate, neutral button available to everyone.
+  var plainRating = kind === 'review' && getNativePlatform() === 'ios';
+  if (plainRating) copy = { text: 'If Dx Dash is helping you study, a rating helps other students find it.', action: '⭐ Rate Dx Dash' };
+  var box = document.createElement('div');
+  box.className = 'prompt-card';
+  box.setAttribute('data-prompt', kind);
+  var text = document.createElement('div');
+  text.className = 'prompt-text';
+  text.textContent = copy.text;
+  box.appendChild(text);
+  var row = document.createElement('div');
+  row.className = 'prompt-row';
+  function button(label, cls, onClick) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn btn-sm ' + cls;
+    b.textContent = label;
+    b.addEventListener('click', onClick);
+    row.appendChild(b);
+  }
+  function finish(event) {
+    if (event) storage.set('promptState', recordPrompt(storage.get('promptState') || {}, kind, event, Date.now()));
+    box.remove();
+  }
+  button(copy.action, 'btn-gold', function () {
+    if (kind === 'account') { finish('done'); deps.openAccount(); return; }
+    if (plainRating) {
+      rateTheApp().then(function (res) {
+        storage.set('promptState', recordPrompt(storage.get('promptState') || {}, 'review', 'done', Date.now()));
+        if (res.how === 'copied') deps.toast('Link copied. Paste it into your browser to rate.');
+        if (res.how === 'failed') deps.toast('Could not open the store from here.');
+        finish(null);
+      });
+      return;
+    }
+    if (kind === 'review') { track('rating_prompt', Object.assign({ step: 'enjoying_yes' }, promptFacts)); askToRate(); return; }
+    shareGame().then(function (result) {
+      if (result === 'copied') deps.toast('Link copied. Paste it to a friend!');
+      if (result === 'failed') { deps.toast('Could not share from here.'); return; }
+      finish('done');
+    });
+  });
+  if (kind === 'review' && !plainRating) button('😕 Not really', 'btn-outline', function () { track('rating_prompt', Object.assign({ step: 'enjoying_no' }, promptFacts)); askWhatWentWrong(); });
+  if (plainRating) button('💬 Send feedback', 'btn-outline', function () { askWhatWentWrong(); });
+  button('Not now', 'btn-outline', function () { if (kind === 'review') track('rating_prompt', Object.assign({ step: 'later' }, promptFacts)); finish(null); });
+  button('Don’t ask again', 'btn-outline', function () { if (kind === 'review') track('rating_prompt', Object.assign({ step: 'dismissed' }, promptFacts)); finish('never'); });
+  box.appendChild(row);
+
+  /** Step two for a happy player: would they rate it? (The store's own rating box first, then the store page.) */
+  function askToRate() {
+    text.textContent = 'Great to hear! Would you rate Dx Dash on the ' + (isIosBuild() ? 'App Store' : 'Play Store') + '? It takes a few seconds and helps other students find it.';
+    while (row.firstChild) row.removeChild(row.firstChild);
+    button('⭐ Sure, rate it', 'btn-gold', function () {
+      track('rating_prompt', Object.assign({ step: 'store_opened' }, promptFacts));
+      rateTheApp().then(function (res) {
+        storage.set('promptState', recordPrompt(storage.get('promptState') || {}, 'review', 'done', Date.now()));
+        if (res.how === 'failed') { deps.toast('Could not open the store from here.'); finish(null); return; }
+        if (res.how === 'copied') deps.toast('Link copied. Paste it into your browser to rate.');
+        // The store decides whether its rating box appears, and does not tell us. Offer the page as a back-up.
+        if (res.how === 'in-app') offerStorePage(); else finish(null);
+      });
+    });
+    button('Maybe later', 'btn-outline', function () { finish(null); });
+    button('Don’t ask again', 'btn-outline', function () { finish('never'); });
+  }
+
+  function offerStorePage() {
+    text.textContent = 'Thank you! If the rating box did not appear, you can rate from the store page instead.';
+    while (row.firstChild) row.removeChild(row.firstChild);
+    button('Open the store page', 'btn-gold', function () {
+      openStorePage().then(function (how) {
+        if (how === 'copied') deps.toast('Link copied. Paste it into your browser to rate.');
+        if (how === 'failed') deps.toast('Could not open the store from here.');
+        finish(null);
+      });
+    });
+    button('Done', 'btn-outline', function () { finish(null); });
+  }
+
+  /** Step two for an unhappy player: a place to say what went wrong, never the store. */
+  function askWhatWentWrong() {
+    // Someone who is not enjoying the game is not asked for a rating again (on iPhone this is plain feedback, with no such rule)
+    if (!plainRating) storage.set('promptState', recordPrompt(storage.get('promptState') || {}, 'review', 'never', Date.now()));
+    while (box.firstChild) box.removeChild(box.firstChild);
+    box.appendChild(buildFeedbackForm({
+      mood: plainRating ? 'idea' : 'unhappy',
+      prompt: plainRating ? 'What would you like to tell us?' : 'Sorry about that. What went wrong, or what would make Dx Dash better?',
+      submit: deps.sendFeedback,
+      trigger: 'rating_prompt',
+      toast: deps.toast,
+      onDone: function () { finish(null); }
+    }));
+  }
+  deps.container.appendChild(box);
+  return kind;
+}
