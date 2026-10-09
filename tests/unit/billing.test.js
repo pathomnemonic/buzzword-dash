@@ -2,7 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   PRODUCTS, configuredProducts, productFor, periodOf, describePrice, periodEnd, subscriptionUntil, checkoutParams,
-  anyProductFor, portalConfig, invoiceSubscriptionId, grantsFromSubscriptions, itemCheckoutParams, parseSignatureHeader, signPayload, verifyStripeSignature, handleEvent, GRACE_SECONDS
+  anyProductFor, chargeReturned, portalConfig, invoiceSubscriptionId, grantsFromSubscriptions, itemCheckoutParams, parseSignatureHeader, signPayload, verifyStripeSignature, handleEvent, GRACE_SECONDS
 } from '../../supabase/functions/_shared/billing.js';
 
 const NOW = 1_800_000_000;
@@ -217,11 +217,71 @@ describe('a payment is never lost to a missing field, a free renewal or an odd o
     expect(calls).toEqual([['pro_revoke_plan', { p_user: 'u1', p_plan: 'lifetime' }]]);
   });
 
-  it('a partial refund, or a refund of a subscription, takes nothing back', async () => {
+  it('a partial refund takes nothing back', async () => {
     const { calls, deps } = fake();
     await handleEvent({ type: 'charge.refunded', data: { object: { refunded: false, metadata: { user_id: 'u1', plan: 'lifetime' } } } }, deps);
-    await handleEvent({ type: 'charge.refunded', data: { object: { refunded: true, metadata: { user_id: 'u1', plan: 'monthly' } } } }, deps);
     expect(calls).toEqual([]);
+  });
+
+  it('a full refund of the invoice that paid for the current period ends that subscription; an older invoice does not', async () => {
+    const sub = { id: 'sub_1', status: 'active', current_period_end: NOW + 30 * 86400, latest_invoice: 'in_new', metadata: { user_id: 'u1', plan: 'monthly' } };
+    const mk = (invoice) => fake({ getInvoice: async () => ({ id: invoice, parent: { subscription_details: { subscription: 'sub_1' } } }), getSubscription: async () => sub });
+    let t = mk('in_new');
+    const out = await handleEvent({ type: 'charge.refunded', data: { object: { refunded: true, invoice: 'in_new', metadata: {} } } }, t.deps);
+    expect(out.action).toBe('monthly_refunded');
+    expect(t.calls).toEqual([['pro_revoke_plan', { p_user: 'u1', p_plan: 'monthly' }]]);
+    t = mk('in_old');
+    expect((await handleEvent({ type: 'charge.refunded', data: { object: { refunded: true, invoice: 'in_old', metadata: {} } } }, t.deps)).handled).toBe(false);
+    expect(t.calls).toEqual([]);
+  });
+
+  it('a payment that finishes later (a bank debit) gives the purchase, exactly like one that finished at once', async () => {
+    const t = fake();
+    const ev = { type: 'checkout.session.async_payment_succeeded', data: { object: { client_reference_id: 'u1', payment_status: 'paid', customer: 'cus_1', metadata: { kind: 'item', item_id: 'trail_fire', user_id: 'u1' } } } };
+    expect((await handleEvent(ev, t.deps)).action).toBe('item');
+    expect(t.calls.map((c) => c[0])).toEqual(['pro_link_customer', 'pro_grant_item']);
+    const unpaid = fake();
+    ev.data.object.payment_status = 'unpaid';
+    expect((await handleEvent(ev, unpaid.deps)).handled).toBe(false);
+    expect(unpaid.calls).toEqual([]);
+  });
+
+  it('a purchase that was already refunded is not handed back by a late "completed" event', async () => {
+    const t = fake({ isPaymentReturned: async () => true });
+    const ev = { type: 'checkout.session.completed', data: { object: { client_reference_id: 'u1', payment_status: 'paid', payment_intent: 'pi_1', metadata: { plan: 'lifetime', user_id: 'u1' } } } };
+    expect(await handleEvent(ev, t.deps)).toEqual({ handled: false, action: 'already_returned' });
+    expect(t.calls).toEqual([]);
+    const item = { type: 'checkout.session.completed', data: { object: { client_reference_id: 'u1', payment_status: 'paid', payment_intent: 'pi_2', metadata: { kind: 'item', item_id: 'trail_fire', user_id: 'u1' } } } };
+    expect((await handleEvent(item, t.deps)).handled).toBe(false);
+    expect(t.calls).toEqual([]);
+  });
+
+  it('a chargeback takes the purchase back, a lost one keeps it taken, and a won one gives it again', async () => {
+    // (the charge as Stripe describes it at each stage; the handler reads it fresh whatever event woke it)
+    const open = { id: 'ch_1', disputed: true, dispute: { status: 'needs_response' }, metadata: { user_id: 'u1', plan: 'lifetime' } };
+    const lostC = { ...open, dispute: { status: 'lost' } };
+    const wonC = { ...open, dispute: { status: 'won' } };
+    const dispute = (type, status) => ({ type, data: { object: { charge: 'ch_1', status } } });
+    let t = fake({ getCharge: async () => open });
+    expect((await handleEvent(dispute('charge.dispute.created'), t.deps)).action).toBe('lifetime_disputed');
+    expect(t.calls).toEqual([['pro_revoke_plan', { p_user: 'u1', p_plan: 'lifetime' }]]);
+    t = fake({ getCharge: async () => lostC });
+    expect((await handleEvent(dispute('charge.dispute.closed', 'lost'), t.deps)).action).toBe('lifetime_disputed');
+    t = fake({ getCharge: async () => wonC });
+    expect((await handleEvent(dispute('charge.dispute.closed', 'won'), t.deps)).action).toBe('lifetime_restored');
+    expect(t.calls[0][0]).toBe('pro_grant_until');
+    // an item, too
+    const itemMeta = { user_id: 'u1', kind: 'item', item_id: 'trail_fire' };
+    let stage = { id: 'ch_2', disputed: true, dispute: { status: 'needs_response' }, metadata: itemMeta };
+    t = fake({ getCharge: async () => stage });
+    await handleEvent(dispute('charge.dispute.created'), t.deps);
+    stage = { ...stage, dispute: { status: 'won' } };
+    await handleEvent(dispute('charge.dispute.closed', 'won'), t.deps);
+    expect(t.calls.map((c) => c[0])).toEqual(['pro_revoke_item', 'pro_grant_item']);
+    // a charge we cannot match to anyone changes nothing
+    t = fake({ getCharge: async () => ({ id: 'ch_3', disputed: true, dispute: { status: 'lost' }, metadata: {} }) });
+    expect((await handleEvent(dispute('charge.dispute.created'), t.deps)).handled).toBe(false);
+    expect(t.calls).toEqual([]);
   });
 
   it('a one-time purchase gets a Stripe customer, so it can be found again; a returning customer is reused', () => {
@@ -281,9 +341,26 @@ describe('premium Locker items (real money)', () => {
     expect(await handleEvent(itemSession(), deps)).toEqual({ handled: true, action: 'item' });
     await handleEvent(itemSession(), deps);
     expect(calls.filter((c) => c[0] === 'pro_grant_item').map((c) => c[1])).toEqual([
-      { p_user: 'u1', p_item: 'trail_fire', p_source: 'stripe' }, { p_user: 'u1', p_item: 'trail_fire', p_source: 'stripe' }
+      { p_user: 'u1', p_item: 'trail_fire', p_source: 'stripe', p_ref: null }, { p_user: 'u1', p_item: 'trail_fire', p_source: 'stripe', p_ref: null }
     ]);
     expect(calls[0]).toEqual(['pro_link_customer', { p_customer: 'cus_1', p_user: 'u1' }]);
+  });
+
+  it('paying twice for the same item returns the second payment, and its refund cannot take the item the first one paid for', async () => {
+    const refunded = [];
+    const t = fake({ refundPayment: async (pi) => { refunded.push(pi); }, rpc: async (n) => (n === 'pro_grant_item' ? 'duplicate' : null) });
+    const out = await handleEvent(itemSession({ payment_intent: 'pi_second' }), t.deps);
+    expect(out.action).toBe('item_duplicate_refunded');
+    expect(refunded).toEqual(['pi_second']);
+    // the refund event for that second payment names its own payment, so the database leaves the first one's item alone
+    const u = fake({ getCharge: async () => ({ id: 'ch_2', refunded: true, payment_intent: 'pi_second', metadata: { kind: 'item', item_id: 'trail_fire', user_id: 'u1' } }) });
+    await handleEvent({ type: 'charge.refunded', data: { object: { id: 'ch_2', refunded: true } } }, u.deps);
+    expect(u.calls).toEqual([['pro_revoke_item', { p_user: 'u1', p_item: 'trail_fire', p_ref: 'pi_second' }]]);
+    // a normal repeat of the same event (same payment) is not a duplicate and refunds nothing
+    const again = [];
+    const v = fake({ refundPayment: async (pi) => { again.push(pi); }, rpc: async (n) => (n === 'pro_grant_item' ? 'already' : null) });
+    expect((await handleEvent(itemSession({ payment_intent: 'pi_first' }), v.deps)).action).toBe('item');
+    expect(again).toEqual([]);
   });
 
   it('an unpaid session, or one with no member, grants nothing', async () => {
@@ -302,9 +379,36 @@ describe('premium Locker items (real money)', () => {
   it('a full refund takes back that item only; a partial one takes nothing; a subscription is untouched', async () => {
     const { calls, deps } = fake();
     await handleEvent({ type: 'charge.refunded', data: { object: { refunded: true, metadata: { kind: 'item', item_id: 'trail_fire', user_id: 'u1' } } } }, deps);
-    expect(calls).toEqual([['pro_revoke_item', { p_user: 'u1', p_item: 'trail_fire' }]]);
+    expect(calls).toEqual([['pro_revoke_item', { p_user: 'u1', p_item: 'trail_fire', p_ref: null }]]);
     const t = fake();
     await handleEvent({ type: 'charge.refunded', data: { object: { refunded: false, metadata: { kind: 'item', item_id: 'trail_fire', user_id: 'u1' } } } }, t.deps);
     expect(t.calls).toEqual([]);
+  });
+});
+
+describe('which charges count as given back', () => {
+  it('a refund does; an open or lost chargeback does; a won one or a closed inquiry does not', () => {
+    expect(chargeReturned({ refunded: true })).toBe(true);
+    expect(chargeReturned({ disputed: true, dispute: { status: 'needs_response' } })).toBe(true);
+    expect(chargeReturned({ disputed: true, dispute: { status: 'under_review' } })).toBe(true);
+    expect(chargeReturned({ disputed: true, dispute: { status: 'lost' } })).toBe(true);
+    expect(chargeReturned({ disputed: true, dispute: 'dp_1' })).toBe(true);      // (not expanded: err on the side of caution)
+    expect(chargeReturned({ disputed: true, dispute: { status: 'won' } })).toBe(false);
+    expect(chargeReturned({ disputed: true, dispute: { status: 'warning_closed' } })).toBe(false);
+    expect(chargeReturned({ refunded: false, disputed: false })).toBe(false);
+    expect(chargeReturned(null)).toBe(false);
+    expect(chargeReturned('ch_1')).toBe(false);
+  });
+});
+
+describe('what the payer is told before paying', () => {
+  it('both kinds of checkout show the terms link and that digital products are delivered at once', () => {
+    const plan = checkoutParams('yearly', 'u1', ENV);
+    const item = itemCheckoutParams('trail_fire', 'u1', ENV);
+    for (const f of [plan, item]) {
+      expect(f['custom_text[submit][message]']).toContain('https://me.github.io/dx/terms.html');
+      expect(f['custom_text[submit][message]']).toMatch(/delivered to your account immediately/);
+      expect(f['custom_text[submit][message]'].length).toBeLessThan(1200);
+    }
   });
 });

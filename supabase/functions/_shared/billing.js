@@ -47,6 +47,20 @@ export function anyProductFor(planOrId) {
   return key === 'library' || key === 'dxdash_library' ? { id: 'dxdash_library', def: LEGACY.dxdash_library } : null;
 }
 
+/**
+ * Has this charge been given back? A refund, or a chargeback that is open or lost. A dispute that was won (or an inquiry
+ * that closed) leaves the charge marked "disputed" in Stripe for good, but the customer did pay, so it does not count.
+ * Expect `dispute` expanded (an object); when it is only an id, a disputed charge is treated as given back.
+ */
+export function chargeReturned(ch) {
+  if (!ch || typeof ch !== 'object') return false;
+  if (ch.refunded) return true;
+  if (!ch.disputed) return false;
+  var d = ch.dispute;
+  if (d && typeof d === 'object' && (d.status === 'won' || d.status === 'warning_closed')) return false;
+  return true;
+}
+
 /** ISO period for a Stripe recurring price: P1Y, P1M, P3M, or '' for a one-time price. */
 export function periodOf(price) {
   var r = price && price.recurring;
@@ -124,6 +138,11 @@ export function grantsFromSubscriptions(subs, nowSec) {
   return out;
 }
 
+/** The line shown above the Pay button: the terms, and that digital products are delivered at once (which ends a right to withdraw). */
+function payNotice(site) {
+  return 'By paying you agree to the Terms of Use (' + site + '/terms.html). Paid products are delivered to your account immediately; where the law gives a right to withdraw from a digital purchase, it ends once delivery starts.';
+}
+
 /** The Stripe Checkout Session to create for a plan, as form fields. Throws a readable message for a bad request. */
 export function checkoutParams(planOrId, userId, env, opts) {
   var p = productFor(planOrId);
@@ -141,6 +160,7 @@ export function checkoutParams(planOrId, userId, env, opts) {
   f['success_url'] = site + '/?pro=success';
   f['cancel_url'] = site + '/?pro=cancelled';
   f['allow_promotion_codes'] = 'true';
+  f['custom_text[submit][message]'] = payNotice(site);
   f['metadata[user_id]'] = userId;
   f['metadata[plan]'] = p.def.plan;
   if (p.def.kind === 'subscription') {
@@ -176,6 +196,7 @@ export function itemCheckoutParams(itemId, userId, env, opts) {
   f['line_items[0][quantity]'] = '1';
   f['success_url'] = site + '/?pro=success&item=' + encodeURIComponent(itemId);
   f['cancel_url'] = site + '/?pro=cancelled';
+  f['custom_text[submit][message]'] = payNotice(site);
   f['metadata[kind]'] = 'item';
   f['metadata[item_id]'] = itemId;
   f['metadata[user_id]'] = userId;
@@ -256,37 +277,12 @@ export async function handleEvent(event, deps) {
   var obj = event && event.data && event.data.object;
   if (!obj) return { handled: false };
   var rpc = deps.rpc;
+  var type = event.type;
 
-  if (event.type === 'checkout.session.completed' && obj.metadata && obj.metadata.kind === 'item') {
-    var itemUser = obj.client_reference_id || obj.metadata.user_id;
-    var itemId = obj.metadata.item_id;
-    if (!itemUser || !itemId) return { handled: false };
-    if (obj.payment_status !== 'paid' && obj.payment_status !== 'no_payment_required') return { handled: false };
-    if (obj.customer) await rpc('pro_link_customer', { p_customer: obj.customer, p_user: itemUser });
-    // (granted whatever the catalog says now: someone who paid for it always gets it)
-    await rpc('pro_grant_item', { p_user: itemUser, p_item: itemId, p_source: 'stripe' });
-    return { handled: true, action: 'item' };
-  }
+  // A payment that finished later (a bank debit, for instance) is the same purchase as one that finished at once.
+  if (type === 'checkout.session.completed' || type === 'checkout.session.async_payment_succeeded') return handleSession(obj, deps);
 
-  if (event.type === 'checkout.session.completed') {
-    var userId = obj.client_reference_id || (obj.metadata && obj.metadata.user_id);
-    var p = anyProductFor(obj.metadata && obj.metadata.plan);
-    if (!userId || !p) return { handled: false };
-    if (obj.payment_status !== 'paid' && obj.payment_status !== 'no_payment_required') return { handled: false };
-    if (obj.customer) await rpc('pro_link_customer', { p_customer: obj.customer, p_user: userId });
-    if (p.def.plan === 'library') { await rpc('pro_grant_library', { p_user: userId, p_source: 'stripe' }); return { handled: true, action: 'library' }; }
-    if (p.def.plan === 'lifetime') {
-      await rpc('pro_grant_until', { p_user: userId, p_until: new Date((deps.now + LIFETIME_DAYS * DAY - DAY) * 1000).toISOString(), p_plan: 'lifetime', p_source: 'stripe', p_trial: false });
-      return { handled: true, action: 'lifetime' };
-    }
-    var sub = obj.subscription ? await deps.getSubscription(obj.subscription) : null;
-    var until = subscriptionUntil(sub, deps.now);
-    if (!until) return { handled: false };
-    await rpc('pro_grant_until', { p_user: userId, p_until: until, p_plan: p.def.plan, p_source: 'stripe', p_trial: !!sub && sub.status === 'trialing' });
-    return { handled: true, action: 'subscription' };
-  }
-
-  if (event.type === 'invoice.paid' || event.type === 'invoice.payment_succeeded') {
+  if (type === 'invoice.paid' || type === 'invoice.payment_succeeded') {
     var subId = invoiceSubscriptionId(obj);
     if (!subId) return { handled: false };
     var sub2 = await deps.getSubscription(subId);
@@ -299,14 +295,124 @@ export async function handleEvent(event, deps) {
     return { handled: true, action: 'renewal' };
   }
 
-  if (event.type === 'charge.refunded') {
-    var m = obj.metadata || {};
-    if (!obj.refunded || !m.user_id) return { handled: false }; // only a full refund takes anything back
-    if (m.kind === 'item' && m.item_id) { await rpc('pro_revoke_item', { p_user: m.user_id, p_item: m.item_id }); return { handled: true, action: 'item_refunded' }; }
-    if (m.plan === 'library') { await rpc('pro_revoke_library', { p_user: m.user_id }); return { handled: true, action: 'library_refunded' }; }
-    if (m.plan === 'lifetime') { await rpc('pro_revoke_plan', { p_user: m.user_id, p_plan: 'lifetime' }); return { handled: true, action: 'lifetime_refunded' }; } // (only a lifetime: a subscription or a trial on the same account stays)
-    return { handled: false };
+  // Money returned (a refund, or a chargeback) takes the purchase back; a chargeback that was won gives it again. These
+  // events can arrive late and out of order, so none of them is taken at its word: the charge is read fresh from Stripe
+  // and the answer follows how it stands now. The same events in any order leave the same result.
+  if (type === 'charge.refunded' || type === 'charge.dispute.created' || type === 'charge.dispute.closed' || type === 'charge.dispute.updated') {
+    var seen = type === 'charge.refunded' ? obj : await chargeOf(obj, deps);
+    if (!seen) return { handled: false };
+    var ch = deps.getCharge && seen.id ? await deps.getCharge(seen.id) : seen;
+    if (!ch) return { handled: false };
+    if (chargeReturned(ch)) return takeBack(ch, deps, ch.refunded ? 'refunded' : 'disputed');
+    if (type === 'charge.refunded') return { handled: false }; // (only part of it was refunded: the purchase stays)
+    return giveBack(ch, deps);
   }
 
   return { handled: false };
+}
+
+/** The charge a dispute is about. */
+async function chargeOf(dispute, deps) {
+  var id = typeof dispute.charge === 'string' ? dispute.charge : dispute.charge && dispute.charge.id;
+  if (!id || !deps.getCharge) return null;
+  return deps.getCharge(id);
+}
+
+/** Who bought what, from a charge: its own notes (a one-time purchase), or those of the subscription it paid for. */
+async function purchaseOfCharge(ch, deps) {
+  var m = ch.metadata || {};
+  var ref = typeof ch.payment_intent === 'string' ? ch.payment_intent : (ch.payment_intent && ch.payment_intent.id) || null;
+  if (m.user_id && (m.kind === 'item' || m.plan)) return { user: m.user_id, kind: m.kind === 'item' ? 'item' : 'plan', item: m.item_id, plan: m.plan, ref: ref };
+  var invId = typeof ch.invoice === 'string' ? ch.invoice : ch.invoice && ch.invoice.id;
+  if (!invId || !deps.getInvoice) return null;
+  var inv = await deps.getInvoice(invId);
+  var subId = invoiceSubscriptionId(inv);
+  if (!subId) return null;
+  var sub = await deps.getSubscription(subId);
+  var sm = (sub && sub.metadata) || {};
+  if (!sm.user_id || !sm.plan) return null;
+  // only the invoice that paid for the period they hold now ends it; an old invoice being refunded must not
+  if (sub.latest_invoice && String(sub.latest_invoice.id || sub.latest_invoice) !== invId) return null;
+  return { user: sm.user_id, kind: 'plan', plan: sm.plan, subscription: sub };
+}
+
+async function takeBack(ch, deps, why) {
+  var rpc = deps.rpc;
+  var buy = await purchaseOfCharge(ch, deps);
+  if (!buy) return { handled: false };
+  if (buy.kind === 'item') { await rpc('pro_revoke_item', { p_user: buy.user, p_item: buy.item, p_ref: buy.ref }); return { handled: true, action: 'item_' + why }; }
+  if (buy.plan === 'library') { await rpc('pro_revoke_library', { p_user: buy.user }); return { handled: true, action: 'library_' + why }; }
+  // (only the plan that was paid for: a lifetime refund must not end a subscription, or a trial, on the same account)
+  await rpc('pro_revoke_plan', { p_user: buy.user, p_plan: buy.plan });
+  await restoreHeldSubscriptions(buy.user, buy.plan, deps);
+  return { handled: true, action: buy.plan + '_' + why };
+}
+
+/**
+ * A member keeps one Pro record, so taking a plan back can also take away a subscription they still pay for (a refunded
+ * lifetime sits on top of a monthly one). Ask Stripe what they still hold and put it back.
+ */
+async function restoreHeldSubscriptions(user, revokedPlan, deps) {
+  if (!deps.listSubscriptions) return;
+  var customer = await deps.rpc('pro_user_customer', { p_user: user });
+  if (!customer) return;
+  var subs = await deps.listSubscriptions(customer);
+  var grants = grantsFromSubscriptions(subs, deps.now).filter(function (g) { return g.plan !== revokedPlan; });
+  for (var i = 0; i < grants.length; i++) {
+    await deps.rpc('pro_grant_until', { p_user: user, p_until: grants[i].until, p_plan: grants[i].plan, p_source: 'stripe', p_trial: grants[i].trial });
+  }
+}
+
+async function giveBack(ch, deps) {
+  var rpc = deps.rpc;
+  var buy = await purchaseOfCharge(ch, deps);
+  if (!buy) return { handled: false };
+  if (buy.kind === 'item') { await rpc('pro_grant_item', { p_user: buy.user, p_item: buy.item, p_source: 'stripe', p_ref: buy.ref }); return { handled: true, action: 'item_restored' }; }
+  if (buy.plan === 'library') { await rpc('pro_grant_library', { p_user: buy.user, p_source: 'stripe' }); return { handled: true, action: 'library_restored' }; }
+  if (buy.plan === 'lifetime') {
+    await rpc('pro_grant_until', { p_user: buy.user, p_until: new Date((deps.now + LIFETIME_DAYS * DAY - DAY) * 1000).toISOString(), p_plan: 'lifetime', p_source: 'stripe', p_trial: false });
+    return { handled: true, action: 'lifetime_restored' };
+  }
+  var until = subscriptionUntil(buy.subscription, deps.now);
+  if (!until) return { handled: false };
+  await rpc('pro_grant_until', { p_user: buy.user, p_until: until, p_plan: buy.plan, p_source: 'stripe', p_trial: false });
+  return { handled: true, action: buy.plan + '_restored' };
+}
+
+/** A finished Checkout: give what was bought. */
+async function handleSession(obj, deps) {
+  var rpc = deps.rpc;
+  var isItem = !!(obj.metadata && obj.metadata.kind === 'item');
+  var userId = obj.client_reference_id || (obj.metadata && obj.metadata.user_id);
+  var p = isItem ? null : anyProductFor(obj.metadata && obj.metadata.plan);
+  if (!userId || (isItem ? !obj.metadata.item_id : !p)) return { handled: false };
+  if (obj.payment_status !== 'paid' && obj.payment_status !== 'no_payment_required') return { handled: false };
+  // Events can arrive late and out of order. If this payment has already been refunded (or is in dispute), the refund
+  // came first and must win: giving the purchase now would hand it back for free.
+  if (obj.payment_intent && deps.isPaymentReturned && (isItem || p.def.kind === 'payment')) {
+    if (await deps.isPaymentReturned(typeof obj.payment_intent === 'string' ? obj.payment_intent : obj.payment_intent.id)) return { handled: false, action: 'already_returned' };
+  }
+  if (obj.customer) await rpc('pro_link_customer', { p_customer: obj.customer, p_user: userId });
+  if (isItem) {
+    // (granted whatever the catalog says now: someone who paid for it always gets it)
+    var pi = typeof obj.payment_intent === 'string' ? obj.payment_intent : (obj.payment_intent && obj.payment_intent.id) || null;
+    var got = await rpc('pro_grant_item', { p_user: userId, p_item: obj.metadata.item_id, p_source: 'stripe', p_ref: pi });
+    // Paid twice for the same thing (two checkout pages open, both paid): the first payment keeps the item and the second
+    // is returned in full, so nobody is charged for something they already have.
+    if (got === 'duplicate' && pi && deps.refundPayment) {
+      await deps.refundPayment(pi);
+      return { handled: true, action: 'item_duplicate_refunded' };
+    }
+    return { handled: true, action: 'item' };
+  }
+  if (p.def.plan === 'library') { await rpc('pro_grant_library', { p_user: userId, p_source: 'stripe' }); return { handled: true, action: 'library' }; }
+  if (p.def.plan === 'lifetime') {
+    await rpc('pro_grant_until', { p_user: userId, p_until: new Date((deps.now + LIFETIME_DAYS * DAY - DAY) * 1000).toISOString(), p_plan: 'lifetime', p_source: 'stripe', p_trial: false });
+    return { handled: true, action: 'lifetime' };
+  }
+  var sub = obj.subscription ? await deps.getSubscription(obj.subscription) : null;
+  var until = subscriptionUntil(sub, deps.now);
+  if (!until) return { handled: false };
+  await rpc('pro_grant_until', { p_user: userId, p_until: until, p_plan: p.def.plan, p_source: 'stripe', p_trial: !!sub && sub.status === 'trialing' });
+  return { handled: true, action: 'subscription' };
 }

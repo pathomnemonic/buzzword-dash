@@ -36,7 +36,8 @@
 // Replace these with your Supabase project values.
 // These are safe to expose — RLS handles authorization.
 
-import { getAuthRedirectUrl, parseAuthLink } from './native.js';
+import { getAuthRedirectUrl, parseAuthLink, isNative } from './native.js';
+import { AUTH_PROVIDERS, providerOf } from './authproviders.js';
 
 var SUPABASE_URL = 'YOUR_SUPABASE_URL';
 var SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY';
@@ -61,6 +62,7 @@ var _subscriptions = [];
 var _disposed = false;
 var _authError = null;
 var _authListeners = [];
+var _authSettings = null;
 
 // ===== MODE LABELS (for display — UI agent may override) =====
 
@@ -183,6 +185,15 @@ function friendlyAuthError(error) {
   return msg;
 }
 
+/** Plain-language messages for a failed "Continue with ..." sign-in. */
+function providerError(error, label, linking) {
+  var msg = (error && error.message) || '';
+  if (/provider.*not enabled|unsupported provider|not enabled/i.test(msg)) return label + ' sign-in is not switched on for this game yet.';
+  if (/manual linking/i.test(msg)) return 'Linking is not switched on yet. Use the email option, or try again later.';
+  if (/already (been )?(linked|registered|exists)|identity.*exists/i.test(msg)) return 'That ' + label + ' login already has an account. Choose "I have an account" to sign in with it.';
+  return friendlyAuthError(error);
+}
+
 function getModeLabel(mode) {
   return MODE_LABELS[mode] || mode || 'Unknown';
 }
@@ -212,6 +223,12 @@ var leaderboard = {
       var authSubscription = _client.auth.onAuthStateChange(function (event, session) {
         _session = session;
         _userId = session && session.user ? session.user.id : null;
+        // Sign in with Apple hands over a token only now, at sign-in. Keep it (server side, never in the page) so that
+        // deleting the account can revoke the Apple login, which the App Store requires.
+        if (event === 'SIGNED_IN' && session && session.provider_refresh_token && providerOf(session.user) === 'apple') {
+          var appleToken = session.provider_refresh_token;
+          setTimeout(function () { leaderboard.proFunction('apple_token', { refresh_token: appleToken }); }, 0);
+        }
         // Deferred so listeners never run inside the Supabase auth lock.
         setTimeout(function () {
           _authListeners.slice().forEach(function (fn) {
@@ -335,6 +352,89 @@ var leaderboard = {
   },
 
   /**
+   * Which sign-in providers are switched on in Supabase (its public auth settings), so only working buttons are shown.
+   * Resolves the "external" map ({ google: true, ... }), or null when it could not be read.
+   */
+  getAuthSettings: function () {
+    if (!isConfigured()) return Promise.resolve(null);
+    if (_authSettings) return Promise.resolve(_authSettings);
+    return fetch(SUPABASE_URL + '/auth/v1/settings', { headers: { apikey: SUPABASE_ANON_KEY } }).then(function (res) {
+      return res.ok ? res.json() : null;
+    }).then(function (j) {
+      _authSettings = j && j.external && typeof j.external === 'object' ? j.external : null;
+      return _authSettings;
+    }).catch(function () { return null; });
+  },
+
+  /**
+   * Email a one-tap sign-in link (no password).
+   *  - `link: true` (a guest choosing "I am new"): the guest account is upgraded in place with that email, which Supabase
+   *    asks them to confirm; their scores, friends and groups stay.
+   *  - otherwise (a returning player): signs in to the existing account. It never makes a new one by accident.
+   * @param {string} email
+   * @param {{link?: boolean}} [opts]
+   * @returns {Promise<{success: boolean, error: string|null}>}
+   */
+  sendSignInLink: function (email, opts) {
+    if (!_client) return Promise.resolve({ success: false, error: 'Not configured' });
+    email = String(email || '').trim();
+    if (!EMAIL_PATTERN.test(email)) return Promise.resolve({ success: false, error: 'Enter a valid email address.' });
+    var guest = !!(_session && _session.user && _session.user.is_anonymous);
+    var request = (opts && opts.link && guest)
+      ? _client.auth.updateUser({ email: email }, { emailRedirectTo: getRedirectUrl() })
+      : _client.auth.signInWithOtp({ email: email, options: { emailRedirectTo: getRedirectUrl(), shouldCreateUser: false } });
+    return request.then(function (res) {
+      if (res.error) {
+        var msg = (res.error && res.error.message) || '';
+        if (/signups? not allowed|user not found|otp/i.test(msg) && /not allowed|not found/i.test(msg)) return { success: false, error: 'There is no account with that email. Choose "I am new" to create one.' };
+        return { success: false, error: friendlyAuthError(res.error) };
+      }
+      return { success: true, error: null };
+    }).catch(function (e) {
+      return { success: false, error: (e && e.message) || 'Could not send the email.' };
+    });
+  },
+
+  /**
+   * Sign in with Google, Apple, ... through Supabase.
+   *  - `link: true` (a guest choosing "I am new"): the guest account is upgraded in place, so its scores, friends and groups
+   *    stay with it. Needs "Allow manual linking" in Supabase. If that login already belongs to another account, say so.
+   *  - otherwise (a returning player): sign in to that account, which then loads its cloud save.
+   * On the website the page leaves for the provider and comes back signed in. In the phone app the provider opens in the
+   * system browser (Google refuses embedded web views) and the app's link brings the player back (handleAuthLink).
+   * @param {string} provider a key of AUTH_PROVIDERS
+   * @param {{link?: boolean}} [opts]
+   * @returns {Promise<{success: boolean, redirected?: boolean, error: string|null}>}
+   */
+  signInWithProvider: function (provider, opts) {
+    if (!_client) return Promise.resolve({ success: false, error: 'Not configured' });
+    var def = AUTH_PROVIDERS[provider];
+    if (!def) return Promise.resolve({ success: false, error: 'That sign-in option is not available.' });
+    var native = isNative();
+    var options = { redirectTo: getRedirectUrl(), skipBrowserRedirect: native };
+    if (def.scopes) options.scopes = def.scopes;
+    var link = !!(opts && opts.link) && !!(_session && _session.user && _session.user.is_anonymous);
+    var request = link
+      ? _client.auth.linkIdentity({ provider: provider, options: options })
+      : _client.auth.signInWithOAuth({ provider: provider, options: options });
+    return request.then(function (res) {
+      if (res.error) return { success: false, error: providerError(res.error, def.label, link) };
+      var url = res.data && res.data.url;
+      if (!native) return { success: true, redirected: true, error: null }; // (the library is already taking the page to the provider)
+      if (!url || !/^https:\/\//.test(url)) return { success: false, error: 'Could not start the ' + def.label + ' sign-in.' };
+      return import('@capacitor/browser').then(function (mod) {
+        return mod.Browser.open({ url: url });
+      }).then(function () {
+        return { success: true, redirected: true, error: null };
+      }, function () {
+        return { success: false, error: 'Could not open the ' + def.label + ' sign-in. Try the email option instead.' };
+      });
+    }).catch(function (e) {
+      return { success: false, error: (e && e.message) || 'Could not start the sign-in.' };
+    });
+  },
+
+  /**
    * Sign out, then continue as a fresh guest so the game keeps working.
    * @returns {Promise<{success: boolean, error: string|null}>}
    */
@@ -420,7 +520,21 @@ var leaderboard = {
    */
   deleteAccount: function () {
     if (!_client || !_userId) return Promise.resolve({ success: false, error: 'Not signed in' });
-    return _client.rpc('delete_my_account').then(function (res) {
+    // First the payment function: it cancels a subscription that is still billing and then deletes the account. If it is
+    // not there (no web payments on this project) the database does the deletion itself, and refuses while a
+    // subscription is still billing, so nothing keeps charging an account that has gone.
+    // (a guest has bought nothing, so there is nothing to cancel)
+    var viaPayments = (leaderboard.isGuest() ? Promise.resolve({ error: 'not available' }) : leaderboard.proFunction('delete_account')).then(function (r) {
+      if (r && r.ok) return { done: true };
+      var msg = (r && r.error) || '';
+      if (!msg || /not set up|not available|not found|unknown request|failed to send|could not reach/i.test(msg)) return { done: false };
+      return { done: false, error: msg };
+    });
+    return viaPayments.then(function (first) {
+      if (first.error) return { error: { message: first.error } };
+      if (first.done) return {};
+      return _client.rpc('delete_my_account');
+    }).then(function (res) {
       if (res.error) return { success: false, error: res.error.message };
       return _client.auth.signOut().catch(function () { return null; }).then(function () {
         _session = null;
@@ -492,8 +606,23 @@ var leaderboard = {
   },
 
   /**
+   * Put the richest save the account ever had back as the cloud save (it is kept server-side whenever a smaller save
+   * replaces it). Resolves with updatedAt null when there is nothing kept.
+   * @returns {Promise<{success: boolean, updatedAt?: string|null, error: string|null}>}
+   */
+  restoreBackupSave: function () {
+    if (!_client || !_userId) return Promise.resolve({ success: false, error: 'Not signed in' });
+    return _client.rpc('restore_backup_save').then(function (res) {
+      if (res.error) return { success: false, error: res.error.message };
+      return { success: true, updatedAt: res.data || null, error: null };
+    }).catch(function (e) {
+      return { success: false, error: e.message };
+    });
+  },
+
+  /**
    * Describe the current account for the UI.
-   * @returns {{configured: boolean, ready: boolean, authenticated: boolean, anonymous: boolean, email: string, pendingEmail: string, error: string|null}}
+   * @returns {{configured: boolean, ready: boolean, authenticated: boolean, anonymous: boolean, email: string, provider: string, pendingEmail: string, error: string|null}}
    */
   getStatus: function () {
     var user = _session && _session.user;
@@ -503,6 +632,7 @@ var leaderboard = {
       authenticated: !!_userId,
       anonymous: !!(user && user.is_anonymous),
       email: (user && user.email) || '',
+      provider: providerOf(user),
       pendingEmail: (user && user.new_email) || '',
       error: _authError
     };
@@ -587,6 +717,22 @@ var leaderboard = {
       }
       return res.data || {};
     }).catch(function (e) { return { error: (e && e.message) || 'Could not reach the payment service.' }; });
+  },
+
+  /**
+   * Ask the server to check a phone-store purchase with Google Play / the App Store and attach it to this account.
+   * Always resolves: { ok, valid, granted } | { error }.
+   */
+  iapVerify: function (platform, productId, token) {
+    if (!_client || !_userId) return Promise.resolve({ error: 'Not signed in' });
+    return _client.functions.invoke('iap-verify', { body: { platform: platform, product_id: productId, token: token } }).then(function (res) {
+      if (res.error) {
+        var ctx = res.error.context;
+        if (ctx && typeof ctx.json === 'function') return ctx.json().then(function (j) { return { error: (j && j.error) || res.error.message }; }, function () { return { error: res.error.message }; });
+        return { error: res.error.message };
+      }
+      return res.data || {};
+    }).catch(function (e) { return { error: (e && e.message) || 'Could not reach the purchase check.' }; });
   },
 
   /**

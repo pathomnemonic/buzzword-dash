@@ -31,7 +31,47 @@ import * as fsrs from './fsrs.js';
 import { CHARACTER_MODELS, RETIRED_CHARACTERS } from './game/modelcatalog.js';
 
 // ===== CONSTANTS =====
-var STORAGE_KEY = 'buzzword_dash_v1';
+// Every site on one host (github.io/<name>/) shares the same browser storage, so a save is filed under its own site's
+// path. Another copy of the game on the same host (an older version, a test site) can then never read it or overwrite it.
+var LEGACY_KEY = 'buzzword_dash_v1';
+
+/** The storage key for a site served from `base` ("/" keeps the original key). */
+export function storageKeyFor(base) {
+  var slug = String(base || '/').replace(/^\/+|\/+$/g, '').replace(/[^A-Za-z0-9_.-]+/g, '-');
+  return slug ? LEGACY_KEY + '@' + slug : LEGACY_KEY;
+}
+var STORAGE_KEY = storageKeyFor(typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env.BASE_URL : '/');
+// A second copy of the last save that had real progress in it. An empty or reset save never replaces it, so a save that
+// is lost, damaged or overwritten can still be put back (see Storage.recoverable and restoreLastGood).
+var LASTGOOD_KEY = STORAGE_KEY + '_lastgood';
+var SNAPSHOT_EVERY_MS = 10 * 60 * 1000;
+var SNAPSHOT_MAX_BYTES = 1500000;
+
+/** Does this save hold real progress (not a brand-new or reset one)? Takes the object or its JSON text. */
+function hasProgress(data) {
+  try {
+    var d = typeof data === 'string' ? JSON.parse(data) : data;
+    var p = (d && d.progression) || {};
+    return (Number(p.totalEncounters) || 0) > 0 || (Number(p.bestScore) || 0) > 0 || (Number(p.xp) || 0) > 0;
+  } catch (e) { return false; }
+}
+/** How much play a save holds: lifetime counts only ever grow, so a bigger number is always the later, fuller save. */
+function richness(data) {
+  try {
+    var d = typeof data === 'string' ? JSON.parse(data) : data;
+    var p = (d && d.progression) || {};
+    return (Number(p.totalEncounters) || 0) * 1e6 + (Number(p.totalCoinsEarned) || 0) * 10 + (Number(p.bestScore) > 0 ? 1 : 0);
+  } catch (e) { return 0; }
+}
+
+/** Put `json` in the safety slot, but never over a fuller save: the copy kept aside is the biggest one this device has had. */
+function keepAsideIfFuller(json) {
+  try {
+    var have = localStorage.getItem(LASTGOOD_KEY);
+    if (have && richness(have) > richness(json)) return;
+    localStorage.setItem(LASTGOOD_KEY, json);
+  } catch (e) { /* storage full or unavailable */ }
+}
 var SCHEMA_VERSION = 2;
 
 // ===== DEFAULT STATE =====
@@ -84,6 +124,7 @@ var DEFAULTS = {
     promptState: {},      // when the share / rate / account asks were last shown (see prompts.js)
     runsFinished: 0,
     explored: [],   // menus and tabs the player has opened (red "new" dots go away for these; see discoverydots.js)
+    lessonsSeeded: false, // one-time: players who already knew the app had their red-dot lessons counted as seen (lessons.js)
     firstRunAt: 0,
     lastTipPromptAt: 0,
     lastReminderDate: '',
@@ -148,6 +189,9 @@ var DEFAULTS = {
     xp: 0,
     // One-time migrations: these must be listed here or they are forgotten on the next load
     premiumKept: false, // one-time: premium maps a player had already unlocked by level were kept for them
+    // premium items the server (not the phone's store) says were paid for, for which account, and which of them the server
+    // failed to list on the last check: how a refunded item is taken back (js/pro.js refreshPro)
+    paidItems: { uid: '', ids: [], missing: [] },
     proGiftItem: '',  // the item the one-time Pro gift was spent on (js/pro.js proGiftState); empty until it is used
     modelIntroSeen: false,
     monsterDefaultSeen: false,
@@ -592,8 +636,17 @@ class Storage {
   // --- Core load/save ---
 
   load() {
+    this._protectNewer = false;
     try {
       var raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw && STORAGE_KEY !== LEGACY_KEY) {
+        // First time on this site's own key: bring the earlier shared save across (copied, never moved)
+        var legacy = localStorage.getItem(LEGACY_KEY);
+        if (legacy && hasProgress(legacy)) {
+          localStorage.setItem(STORAGE_KEY, legacy);
+          raw = legacy;
+        }
+      }
       if (raw) {
         var parsed = JSON.parse(raw);
 
@@ -617,7 +670,10 @@ class Storage {
           // Future version — use defaults rather than corrupt
           console.warn('[Storage] Future schema version detected, using defaults');
           this.data = deepClone(DEFAULTS);
-          // Don't save — preserve the future data in case of downgrade
+          // Never write over a save from a newer version: keep a copy, and stop saving until the player chooses to start over
+          this._protectNewer = true;
+          this._problem('newer', 'v' + parsed.schemaVersion);
+          try { localStorage.setItem(STORAGE_KEY + '_newer', raw); } catch (e4) { /* storage full or unavailable */ }
         }
       } else {
         this.data = deepClone(DEFAULTS);
@@ -638,9 +694,66 @@ class Storage {
     } catch (e) {
       console.warn('[Storage] Damaged data, using defaults:', e.message);
       this._problem('repaired', 'invariants');
+      // keep what was there, so it can be recovered rather than overwritten by the next save
+      try { var broken = localStorage.getItem(STORAGE_KEY); if (broken && hasProgress(broken)) keepAsideIfFuller(broken); } catch (e3) { /* storage full or unavailable */ }
       this.data = deepClone(DEFAULTS);
       this._ensureInvariants();
     }
+
+    // Started empty, but an earlier copy with real progress is still there: offer it back (main.js asks)
+    this.recoverable = null;
+    try {
+      if (!hasProgress(this.data)) {
+        var lg = localStorage.getItem(LASTGOOD_KEY);
+        if (lg && hasProgress(lg)) {
+          var p = (JSON.parse(lg).progression) || {};
+          this.recoverable = { answered: Number(p.totalEncounters) || 0, coins: Number(p.coins) || 0, level: Math.floor((Number(p.xp) || 0) / 100) };
+        }
+      }
+    } catch (e) { this.recoverable = null; }
+  }
+
+  /**
+   * A copy of the save from somewhere else on the device (the phone's file storage) turned up while this game is empty:
+   * keep it as the earlier copy, and let the usual question offer it back. Returns what is on offer, or null.
+   */
+  adoptBackup(text) {
+    try {
+      var parsed = JSON.parse(text);
+      if (!parsed || typeof parsed.schemaVersion !== 'number' || parsed.schemaVersion > SCHEMA_VERSION || !hasProgress(parsed)) return null;
+      if (hasProgress(this.data)) return null;
+    } catch (e) { return null; }
+    keepAsideIfFuller(text);
+    this.load();
+    return this.recoverable;
+  }
+
+  /** Keep the current save aside before it is replaced by a cloud save, an imported backup or a reset. */
+  _keepAside() {
+    try {
+      var cur = localStorage.getItem(STORAGE_KEY);
+      if (cur && hasProgress(cur)) keepAsideIfFuller(cur);
+    } catch (e) { /* storage full or unavailable */ }
+  }
+
+  /** Put back the last save that had real progress (after the player agrees). */
+  restoreLastGood() {
+    try {
+      var lg = localStorage.getItem(LASTGOOD_KEY);
+      if (!lg || !hasProgress(lg)) return { ok: false };
+      var parsed = JSON.parse(lg);
+      if (typeof parsed.schemaVersion !== 'number' || parsed.schemaVersion > SCHEMA_VERSION) return { ok: false };
+      localStorage.setItem(STORAGE_KEY, lg);
+    } catch (e) { return { ok: false }; }
+    this.load();
+    this.recoverable = null;
+    return { ok: true };
+  }
+
+  /** The player chose to start fresh: forget the earlier copy. */
+  discardLastGood() {
+    try { localStorage.removeItem(LASTGOOD_KEY); } catch (e) { /* ignore */ }
+    this.recoverable = null;
   }
 
   /** Remember a saving or loading problem; analytics reads the list (it may start after the load) and the callback. */
@@ -651,8 +764,20 @@ class Storage {
   }
 
   save() {
+    if (this._protectNewer) return; // the stored save belongs to a newer version of the game: leave it alone
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.data));
+      var json = JSON.stringify(this.data);
+      // never let an empty save quietly replace real progress: keep the old one aside first; and keep a fresh copy of a
+      // lived-in save every few minutes
+      if (!hasProgress(this.data)) {
+        var before = localStorage.getItem(STORAGE_KEY);
+        if (before && hasProgress(before)) keepAsideIfFuller(before);
+      } else if (Date.now() - (this._snapshotAt || 0) > SNAPSHOT_EVERY_MS && json.length < SNAPSHOT_MAX_BYTES) {
+        this._snapshotAt = Date.now();
+        keepAsideIfFuller(json);
+      }
+      localStorage.setItem(STORAGE_KEY, json);
+      if (typeof this.onSaved === 'function') { try { this.onSaved(json); } catch (e5) { /* a backup problem never stops saving */ } }
     } catch (e) {
       console.warn('[Storage] Save failed:', e.message);
       this._problem(/quota/i.test(String(e && (e.name || e.message))) ? 'quota' : 'other', e && e.name);
@@ -1281,6 +1406,54 @@ class Storage {
     }
     this.save();
     return true;
+  }
+
+  /**
+   * Remember which premium items the server lists for this account. (Only these can ever be taken back: never the
+   * ones bought with coins, gifted, or bought through the phone's store.)
+   */
+  notePaidItems(uid, ids) {
+    var pi = this.data.progression.paidItems;
+    if (!pi || typeof pi !== 'object' || !Array.isArray(pi.ids)) pi = this.data.progression.paidItems = { uid: '', ids: [], missing: [] };
+    if (pi.uid && pi.uid !== uid) { pi.ids = []; pi.missing = []; } // (a different account: nothing carries over)
+    pi.uid = uid;
+    var changed = false;
+    (ids || []).forEach(function (id) { if (pi.ids.indexOf(id) < 0) { pi.ids.push(id); changed = true; } });
+    pi.missing = (pi.missing || []).filter(function (id) { return (ids || []).indexOf(id) < 0; });
+    if (changed) this.save();
+  }
+
+  /**
+   * The server's list no longer has an item it once had (a refund, or a lost chargeback): take it back. Never on one odd
+   * answer: it has to be missing on two checks in a row. Returns the ids taken back.
+   * @param {string} uid the account the answer is for
+   * @param {string[]} serverIds what the server lists now
+   * @param {string[]} [keep] items owned some other way (the phone's store), which stay
+   */
+  reconcilePaidItems(uid, serverIds, keep) {
+    var pi = this.data.progression.paidItems;
+    if (!pi || !Array.isArray(pi.ids) || pi.uid !== uid) return [];
+    var removed = [];
+    var missing = [];
+    var self = this;
+    pi.ids.slice().forEach(function (id) {
+      if (serverIds.indexOf(id) >= 0 || (keep || []).indexOf(id) >= 0) return;
+      if ((pi.missing || []).indexOf(id) >= 0) { self._takeBack(id); removed.push(id); } else missing.push(id);
+    });
+    pi.ids = pi.ids.filter(function (id) { return removed.indexOf(id) < 0; });
+    pi.missing = missing;
+    if (removed.length || missing.length) this.save();
+    return removed;
+  }
+
+  _takeBack(id) {
+    var p = this.data.progression;
+    var at = p.ownedItems.indexOf(id);
+    if (at >= 0) p.ownedItems.splice(at, 1);
+    var eq = p.equipped || {};
+    Object.keys(eq).forEach(function (slot) {
+      if (eq[slot] === id && DEFAULTS.progression.equipped[slot]) eq[slot] = DEFAULTS.progression.equipped[slot];
+    });
   }
 
   /** Take the one-time Pro gift: the item becomes yours for free. False when it is already yours or the gift is already spent. */
@@ -2228,6 +2401,7 @@ class Storage {
     if (typeof data.schemaVersion !== 'number' || data.schemaVersion > SCHEMA_VERSION) {
       return { ok: false, error: 'The cloud save is from a newer version of the game. Refresh and try again.' };
     }
+    this._keepAside();
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
     } catch (e) {
@@ -2256,6 +2430,7 @@ class Storage {
     if (typeof data.schemaVersion !== 'number' || data.schemaVersion > SCHEMA_VERSION) {
       return { ok: false, error: 'Backup is from an incompatible version.' };
     }
+    this._keepAside();
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
     } catch (e) {
@@ -2273,6 +2448,8 @@ class Storage {
    */
   reset(scope) {
     if (!scope) scope = 'all_local';
+    this._protectNewer = false; // starting over is a deliberate choice, so saving resumes
+
 
     switch (scope) {
       case 'progress':
@@ -2301,10 +2478,18 @@ class Storage {
         this.data = deepClone(DEFAULTS);
         // Also clear custom cards storage
         try { localStorage.removeItem('buzzword_dash_custom_cards'); } catch (e) { /* best-effort */ }
+        try { localStorage.removeItem(STORAGE_KEY + '_newer'); } catch (e) { /* best-effort */ }
         break;
     }
 
     this.save();
+    if (typeof this.onReset === 'function') { try { this.onReset(scope); } catch (e6) { /* ignore */ } }
+    // a reset of progress the player asked for must stay reset: forget the safety copy too (after the save, which would
+    // otherwise keep the old progress aside as if the reset were an accident)
+    if (scope === 'progress' || scope === 'all_local') {
+      try { localStorage.removeItem(LASTGOOD_KEY); } catch (e) { /* ignore */ }
+      this.recoverable = null;
+    }
   }
 }
 

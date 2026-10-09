@@ -22,7 +22,7 @@ import { proConfig } from './remoteconfig.js';
 import { GATE_FEATURES } from './proconfig.js';
 import { getIap } from './iap.js';
 import { storage } from './storage.js';
-import { isNative } from './native.js';
+import { isNative, getNativePlatform } from './native.js';
 import { track } from './analytics/index.js';
 import { PREMIUM_ITEMS, itemProductId, premiumCents, formatUsd } from '../supabase/functions/_shared/premium.js';
 
@@ -40,6 +40,8 @@ var CANCEL_KEY = 'dx_pro_cancel_started';
 var SYNC_EVERY_MS = 12 * 60 * 60 * 1000;
 var SYNC_RETRY_MS = 10 * 60 * 1000;
 var SYNC_TRY_KEY = 'dx_pro_sync_try';
+var PENDING_KEY = 'dx_pro_pending';
+var PENDING_MS = 3 * 24 * 60 * 60 * 1000;
 
 export var PRO_PLAN_INFO = {
   dxdash_pro_yearly: { label: 'Yearly', blurb: 'BEST VALUE', rank: 1 },
@@ -128,13 +130,16 @@ export function probeSellable(deps) {
  * Premium Locker items this member has paid for (from the server, or the store) become theirs here. Only ever adds: a failed
  * or empty answer can never take an item away.
  */
-export function grantOwnedItems(ids) {
+export function grantOwnedItems(ids, serverIds, uid) {
   if (!storage || !storage.data || !storage.data.progression || !Array.isArray(ids)) return 0;
   var owned = storage.data.progression.ownedItems;
   var added = [];
   ids.forEach(function (id) {
     if (typeof id === 'string' && /^[a-z0-9_]{3,64}$/.test(id) && owned.indexOf(id) < 0) { owned.push(id); added.push(id); }
   });
+  if (uid && Array.isArray(serverIds) && serverIds.length && storage.notePaidItems) {
+    try { storage.notePaidItems(uid, serverIds.filter(function (id) { return typeof id === 'string' && /^[a-z0-9_]{3,64}$/.test(id); })); } catch (e) { /* best effort */ }
+  }
   if (added.length) {
     try { storage.save(); } catch (e) { /* kept in memory; saved next time */ }
     if (typeof document !== 'undefined') document.dispatchEvent(new CustomEvent('dx:items-granted', { detail: { items: added } }));
@@ -152,7 +157,38 @@ function dueForSync(now) {
   if (tried && now >= tried && now - tried < SYNC_RETRY_MS) return false; // (a failed check is not repeated at once)
   return !at || now - at > SYNC_EVERY_MS || at > now;
 }
+function syncRetryDue(now) {
+  var s = store();
+  var tried = s ? Number(s.getItem(SYNC_TRY_KEY)) || 0 : 0;
+  return !tried || now < tried || now - tried >= SYNC_RETRY_MS;
+}
 function markSynced(now) { try { var s = store(); if (s) s.setItem(SYNC_KEY, String(now)); } catch (e) { /* ignore */ } }
+
+/**
+ * A payment is on its way. Noted as soon as the player is sent to pay, so that even if they close the tab, lose the
+ * connection or the payment event is slow, every check after this one asks Stripe directly (at most every 10 minutes)
+ * until it shows up, for up to three days. Nothing paid for is ever left locked.
+ */
+export function markPaymentPending(now) {
+  writeJson(PENDING_KEY, { at: typeof now === 'number' ? now : Date.now() });
+}
+export function paymentPending(now) {
+  var p = readJson(PENDING_KEY, null);
+  var t = typeof now === 'number' ? now : Date.now();
+  return !!(p && p.at && t - p.at < PENDING_MS && p.at <= t + 60000);
+}
+export function clearPaymentPending() { try { var s = store(); if (s) s.removeItem(PENDING_KEY); } catch (e) { /* ignore */ } }
+
+/**
+ * Someone else is using this device now (signed out, or a different account signed in): what the server said about the
+ * last account's Pro is put away at once, rather than shown to the next person for days. A purchase through the phone's
+ * own store belongs to the phone's store account, not to a login, so it stays.
+ */
+export function forgetServerPro() {
+  var c = readJson(CACHE_KEY, null);
+  if (c && c.source !== 'store') { try { var s = store(); if (s) { s.removeItem(CACHE_KEY); s.removeItem(TRIAL_KEY); s.removeItem(SYNC_KEY); s.removeItem(SYNC_TRY_KEY); s.removeItem(PENDING_KEY); } } catch (e) { /* ignore */ } }
+  if (typeof document !== 'undefined') document.dispatchEvent(new CustomEvent('dx:pro-changed'));
+}
 
 function cachedActive() { var c = readJson(CACHE_KEY, null); return !!(c && c.active); }
 
@@ -223,6 +259,8 @@ export function refreshPro(deps) {
   var libraryOwned = null;
   var trialStarted = false;
   var ownedItems = [];
+  var storeItems = [];      // owned through the phone's store: never taken back by the server
+  var serverItems = null;   // what the server lists as paid for (null until it has answered properly)
   var found = [];
   var jobs = [];
   jobs.push(iap.start().then(function (ok) {
@@ -232,11 +270,12 @@ export function refreshPro(deps) {
       if (iap.owned(id)) found.push({ source: 'store', active: true, plan: planName(id), until: /lifetime/.test(id) ? Date.now() + FOREVER : undefined });
     });
     libraryOwned = iap.owned(proConfig().library);
-    Object.keys(PREMIUM_ITEMS).forEach(function (id) { if (iap.owned(itemProductId(id))) ownedItems.push(id); });
+    Object.keys(PREMIUM_ITEMS).forEach(function (id) { if (iap.owned(itemProductId(id))) { ownedItems.push(id); storeItems.push(id); } });
   }).catch(function () { /* the store did not answer */ }));
   var lb = deps.lb;
   if (lb && lb.isAuthenticated && lb.isAuthenticated() && lb.getMyPro) {
-    jobs.push(lb.getMyPro().then(function (r) {
+    // (a phone-store purchase is first checked with the store and attached to the account, so what the server says below includes it)
+    jobs.push((iapVerifyEnabled() ? iap.start().catch(function () { return false; }).then(function () { return verifyStorePurchases(lb, iap, { now: now }); }).catch(function () { return 0; }) : Promise.resolve(0)).then(function () { return lb.getMyPro(); }).then(function (r) {
       // every account (not a guest) gets one free 7-day trial: start it the first time we see it is unused
       if (r && !r.active && r.trial_available && lb.startProTrial && proLive()) {
         return lb.startProTrial().then(function (t) {
@@ -252,7 +291,7 @@ export function refreshPro(deps) {
       if (!r || r.error) return; // no answer: keep what we had (never read a failed call as "no Pro")
       asked++;
       writeJson(TRIAL_KEY, { available: !!r.trial_available });
-      if (Array.isArray(r.items)) ownedItems = ownedItems.concat(r.items);
+      if (Array.isArray(r.items)) { ownedItems = ownedItems.concat(r.items); if (r.signed_in === true) serverItems = (serverItems || []).concat(r.items); } // (an answer that does not say it was for a signed-in account is never taken as proof that something is gone)
       if (r && r.library && !isNative()) libraryOwned = true;
       if (r && r.active) found.push({ source: r.source === 'code' ? 'code' : 'server', active: true, until: r.until ? new Date(r.until).getTime() : undefined, plan: r.plan, trial: !!r.trial, since: r.since ? new Date(r.since).getTime() : undefined });
     }).catch(function () { /* offline */ }));
@@ -261,22 +300,33 @@ export function refreshPro(deps) {
     // This account may have paid for something whose payment event never reached us: ask Stripe (through the checkout
     // function) and let it grant what is missing. At most every 12 hours (at once after a purchase), and only for a real
     // account on the website. It only ever adds.
-    if (webCheckoutEnabled() && hasAccount(lb) && lb.proFunction && (deps.forceSync || dueForSync(now))) {
+    var pending = paymentPending(now);
+    if (webCheckoutEnabled() && hasAccount(lb) && lb.proFunction && (deps.forceSync || (pending ? syncRetryDue(now) : dueForSync(now)))) {
       try { var ss = store(); if (ss) ss.setItem(SYNC_TRY_KEY, String(now)); } catch (e) { /* ignore */ }
       return lb.proFunction('sync').then(function (res) {
         if (res && res.ok) markSynced(now);
-        if (res && res.ok && res.granted && res.granted.length) return lb.getMyPro();
+        if (res && res.ok && res.granted && res.granted.length) { clearPaymentPending(); return lb.getMyPro(); }
         return null;
       }).then(function (r) {
-        if (r && Array.isArray(r.items)) ownedItems = ownedItems.concat(r.items);
+        if (r && Array.isArray(r.items)) { ownedItems = ownedItems.concat(r.items); if (r.signed_in === true) serverItems = (serverItems || []).concat(r.items); }
         if (r && r.active && !found.length) found.push({ source: 'server', active: true, until: r.until ? new Date(r.until).getTime() : undefined, plan: r.plan, trial: !!r.trial, since: r.since ? new Date(r.since).getTime() : undefined });
       }).catch(function () { /* the next refresh tries again */ });
     }
   }).then(function () {
-    grantOwnedItems(ownedItems);
+    var itemUid = lb && lb.getUserId && hasAccount(lb) ? lb.getUserId() : '';
+    grantOwnedItems(ownedItems, serverItems, itemUid);
+    // a refunded or charged-back item is taken back (only when the server answered properly, twice in a row, for this account)
+    if (itemUid && serverItems && storage.reconcilePaidItems) {
+      var taken = storage.reconcilePaidItems(itemUid, serverItems, storeItems);
+      if (taken.length && typeof document !== 'undefined') document.dispatchEvent(new CustomEvent('dx:items-revoked', { detail: { items: taken } }));
+    }
     var before = isPro(now);
     var prev = readJson(CACHE_KEY, null);
+    var uid = lb && lb.getUserId && lb.isAuthenticated && lb.isAuthenticated() ? lb.getUserId() : '';
+    // a different account's answer is not this one's to fall back on
+    if (prev && prev.source !== 'store' && prev.uid && uid && prev.uid !== uid) prev = null;
     var next = combineStatus(found, prev, { now: now, fresh: asked > 0 });
+    if (uid && next.source !== 'store') next.uid = uid;
     if (next.active && !(next.since > 0)) {
       // no start date from the server (the store, or a code): the first time this install saw Pro, kept while it carries on,
       // and begun again after a lapse or when a trial becomes a purchase
@@ -292,6 +342,44 @@ export function refreshPro(deps) {
     if (trialStarted && typeof document !== 'undefined') document.dispatchEvent(new CustomEvent('dx:pro-trial-started'));
     return proStatus();
   });
+}
+
+/**
+ * Is purchase checking on? It needs a build made with VITE_IAP_VERIFY=1 (once the iap-verify function and its store
+ * secrets are live) and a real account on the phone.
+ */
+export function iapVerifyEnabled() {
+  var env = (typeof import.meta !== 'undefined' && import.meta.env) || {};
+  return String(env.VITE_IAP_VERIFY || '') === '1' && !!env.VITE_SUPABASE_URL && isNative();
+}
+
+var VERIFIED_KEY = 'dx_iap_verified';
+var VERIFY_EVERY_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * Have the server check each phone-store purchase this player owns with the store itself, so it becomes part of their
+ * account (and a refund is noticed). A purchase is checked when first seen and then twice a day. Never throws and never
+ * takes anything away by itself: the server decides, and an error changes nothing.
+ * @returns {Promise<number>} how many were sent
+ */
+export function verifyStorePurchases(lb, iap, o) {
+  o = o || {};
+  var now = typeof o.now === 'number' ? o.now : Date.now();
+  if (!iapVerifyEnabled() || !hasAccount(lb) || !lb.iapVerify || !iap || !iap.receipt) return Promise.resolve(0);
+  var platform = getNativePlatform();
+  var ids = proConfig().plans.concat(Object.keys(PREMIUM_ITEMS).map(itemProductId));
+  var seen = readJson(VERIFIED_KEY, {});
+  var jobs = [];
+  ids.forEach(function (id) {
+    if (!iap.owned(id)) return;
+    if (seen[id] && now - seen[id] < VERIFY_EVERY_MS && seen[id] <= now) return;
+    var token = iap.receipt(id);
+    if (!token) return;
+    jobs.push(lb.iapVerify(platform, id, token).then(function (r) {
+      if (r && !r.error) { seen[id] = now; writeJson(VERIFIED_KEY, seen); }
+    }).catch(function () { /* the next refresh tries again */ }));
+  });
+  return Promise.all(jobs).then(function () { return jobs.length; });
 }
 
 /** Register the Pro products with the store connection. Call before the store starts (see main.js). */
@@ -479,7 +567,7 @@ export function webBuy(productId, lb, nav) {
   if (!lb.isAuthenticated || !lb.isAuthenticated()) return Promise.resolve({ ok: false, needsAccount: true, error: 'Signing in is needed first. Open Friends → Account, then try again.' });
   if (!hasAccount(lb)) return Promise.resolve({ ok: false, needsAccount: true, error: 'Create a free account first (Friends → Account), so Pro stays with you.' });
   return lb.proFunction('checkout', { plan: productId }).then(function (r) {
-    if (r && r.url && /^https:\/\//.test(r.url)) { (nav || function (u) { window.location.assign(u); })(r.url); return { ok: true, redirected: true }; }
+    if (r && r.url && /^https:\/\//.test(r.url)) { markPaymentPending(); (nav || function (u) { window.location.assign(u); })(r.url); return { ok: true, redirected: true }; }
     return { ok: false, error: (r && r.error) || 'Could not start the payment.' };
   });
 }
@@ -535,7 +623,7 @@ export function buyPremiumItem(item, lb, nav) {
   }
   if (!lb.proFunction) return Promise.resolve({ ok: false, error: 'Payments are not available right now.' });
   return lb.proFunction('item', { item: item.id, name: item.name }).then(function (r) {
-    if (r && r.url && /^https:\/\//.test(r.url)) { (nav || function (u) { window.location.assign(u); })(r.url); return { ok: true, redirected: true }; }
+    if (r && r.url && /^https:\/\//.test(r.url)) { markPaymentPending(); (nav || function (u) { window.location.assign(u); })(r.url); return { ok: true, redirected: true }; }
     var msg = (r && r.error) || 'Could not start the payment.';
     if (/unknown request/i.test(msg)) { _itemsCap = false; msg = 'Locker items are not switched on just yet. You have not been charged.'; }
     return { ok: false, error: msg };

@@ -23,7 +23,7 @@
 
 import { renderLibraryBanner } from './proui.js';
 import * as proModule from './pro.js';
-import { registerProProducts, refreshPro, probeSellable, libraryUnlocked, waitForWebPayment, waitForWebItem, requireGate, checkGate, checkCancelFollowThrough } from './pro.js';
+import { registerProProducts, refreshPro, probeSellable, libraryUnlocked, waitForWebPayment, waitForWebItem, requireGate, checkGate, checkCancelFollowThrough, clearPaymentPending, forgetServerPro } from './pro.js';
 import { installProUi, setProUiDeps } from './proui.js';
 import { probeTipJar, tipJarReady } from './tipjar.js';
 import { openTipJar } from './tipui.js';
@@ -35,7 +35,8 @@ import { loadRemoteConfig, isKilled } from './remoteconfig.js';
 import { audio, MENU_THEME } from './audio.js';
 import { CARDS, CARD_BY_ID, SUBJECTS, loadCards, areCardsReady, seededPool, setLibraryUnlocked } from './cardhub.js';
 import { bonusSubjectFor, bonusCoinsFor, nextGoalLine } from './progress.js';
-import { discoveryIdFor, markExplored } from './discoverydots.js';
+import { discoveryIdFor, markExplored, discoveryActive } from './discoverydots.js';
+import { startLesson, seedLessons } from './lessons.js';
 import { mountFitScreens } from './fitscreen.js';
 import { localDateKey } from './uihelpers.js';
 import { customCards } from './customcards.js';
@@ -76,6 +77,7 @@ import { ComboTracker, musicMood } from './game/combo.js';
 import { palCheer, currentPal, streakDeservesCheer } from './palui.js';
 import { palReminder } from './companions.js';
 import { maybeAskConsent, analyticsAvailable } from './analyticsui.js';
+import { readNativeBackup, scheduleNativeBackup, flushNativeBackup, clearNativeBackup } from './nativebackup.js';
 import { analytics } from './analytics/index.js';
 import { installAnalytics, reportRunEnd, reportFrame, instrumentLeaderboard } from './analytics/instrument.js';
 import { track as trackEvent } from './analytics/index.js';
@@ -1218,6 +1220,43 @@ function maybeRerollTheme() {
   refreshTheme();
 }
 
+/** "We found your earlier progress": restore it, or start fresh (the earlier copy is then forgotten). */
+function askToRestoreProgress(found) {
+  var overlay = document.createElement('div');
+  overlay.id = 'restoreProgress';
+  overlay.className = 'tut-exit';
+  overlay.setAttribute('role', 'alertdialog');
+  overlay.setAttribute('aria-modal', 'true');
+  var box = document.createElement('div');
+  box.className = 'tut-exit-box';
+  var h = document.createElement('h2');
+  h.textContent = 'Welcome back! Restore your progress?';
+  var p = document.createElement('p');
+  p.textContent = 'Your game started empty, but an earlier copy of your progress is still on this device: ' + found.answered.toLocaleString() + ' cards answered, ' + found.coins.toLocaleString() + ' coins, about level ' + Math.max(1, found.level) + '. Restore it?';
+  var buttons = document.createElement('div');
+  buttons.className = 'tut-buttons';
+  var yes = document.createElement('button');
+  yes.type = 'button'; yes.id = 'restoreYes'; yes.className = 'btn btn-primary btn-sm'; yes.textContent = 'Restore my progress';
+  var no = document.createElement('button');
+  no.type = 'button'; no.id = 'restoreNo'; no.className = 'btn btn-outline btn-sm'; no.textContent = 'Start fresh';
+  buttons.appendChild(yes); buttons.appendChild(no);
+  box.appendChild(h); box.appendChild(p); box.appendChild(buttons);
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+  yes.addEventListener('click', function () {
+    var r = storage.restoreLastGood();
+    overlay.remove();
+    ui._showToast(r.ok ? 'Your progress is back! 🎉' : 'Could not restore it. Your game is unchanged.', 3500);
+    if (r.ok) { try { ui.renderHome(); document.dispatchEvent(new CustomEvent('dx:coins-changed')); document.dispatchEvent(new CustomEvent('dx:profile-changed')); } catch (e) { /* the page redraws on its own */ } }
+  });
+  no.addEventListener('click', function () {
+    storage.discardLastGood();
+    overlay.remove();
+    if (!storage.get('firstRunComplete')) ui.showTutorial({ firstRun: true });
+  });
+  yes.focus();
+}
+
 /** Fill the account section of the Profile tab, and add the invitation when signed out. */
 function fillProfileAccount() {
   var lb = leaderboardModule ? leaderboardModule.leaderboard : null;
@@ -1262,6 +1301,12 @@ function init() {
     Object.defineProperty(window, '__cards', { get: function () { return CARDS; } }); // (CARDS is filled in after the first paint)
   }
   storage.load();
+  // In the phone apps the save is also kept in a file (the browser storage can be cleared by the system); if this game started
+  // empty and the file holds a fuller save, it is offered back before the first-run tutorial
+  storage.onSaved = scheduleNativeBackup;
+  storage.onReset = function (scope) { if (scope === 'progress' || scope === 'all_local') clearNativeBackup(); };
+  var nativeRestore = (storage.recoverable ? Promise.resolve() : readNativeBackup().then(function (text) { if (text) storage.adoptBackup(text); })).catch(function () { /* the question is just not asked */ });
+  document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') flushNativeBackup(); });
   // Switches for mechanics that turn out broken in the field (see remoteconfig.js); the saved copy applies at once
   loadRemoteConfig().then(function () { trackEvent('remote_config', { killed: [], experiments: 0, ok: true }); document.dispatchEvent(new CustomEvent('dx:pro-changed')); }).catch(function () { trackEvent('remote_config', { ok: false }); /* the saved copy stays */ });
   // Badges added or fixed in an update are awarded to anyone who already qualifies, shown a little after launch
@@ -1321,6 +1366,7 @@ function init() {
   } catch (e) { webPayReturn = ''; }
   registerProProducts(); // (before the store starts: the tip jar and Pro share one connection)
   var syncLibrary = function () { setLibraryUnlocked(libraryUnlocked()); if (areCardsReady()) { ui.renderHome(); ui.renderSubjects(); } };
+  document.addEventListener('dx:items-revoked', function () { ui._showToast('A refunded item was returned to the store.', 4000); if (ui.renderShop) ui.renderShop(); if (ui.renderHome && areCardsReady()) ui.renderHome(); });
   document.addEventListener('dx:pro-changed', syncLibrary);
   document.addEventListener('dx:library-changed', syncLibrary);
   installProUi({ toast: function (m) { ui._showToast(m); }, openAccount: function () { if (profileCorner) profileCorner.open(); } });
@@ -1376,6 +1422,27 @@ function init() {
       ui: ui,
       cardIds: ids,
       onClose: opts && opts.onClose,
+      firstRun: !!(opts && opts.firstRun),
+      account: (window.__ui && window.__tutorialAccountOverride) || { // (the override is only for the browser tests, on a ?debug=1 page)
+        available: function () {
+          var lbs = leaderboardModule ? leaderboardModule.leaderboard.getStatus() : null;
+          return FEATURES.backend && !!(lbs && lbs.configured && !(lbs.email && !lbs.anonymous));
+        },
+        render: function (container, done) {
+          var lbm = leaderboardModule ? leaderboardModule.leaderboard : null;
+          function draw() {
+            var lbs = lbm ? lbm.getStatus() : null;
+            if (lbs && lbs.email && !lbs.anonymous) { done(); return; }
+            renderAccountSection(container, {
+              getLeaderboard: function () { return lbm; },
+              getCloudSync: function () { return cloudSync; },
+              toast: function (msg) { ui._showToast(msg); },
+              rerender: draw
+            });
+          }
+          draw();
+        }
+      },
       begin: function (cardIds) { launchRun('study', cardIds, { tutorial: true, allowContinue: false }); }
     });
   };
@@ -1383,7 +1450,11 @@ function init() {
   // First run: the interactive tutorial (skippable); finishing or skipping it ends the first run
   // (the analytics question comes first, once, on a fresh install)
   maybeAskConsent(function () {
-    if (!storage.get('firstRunComplete')) ui.showTutorial({ firstRun: true });
+    nativeRestore.then(function () {
+      // A save that came up empty while an earlier copy with real progress is still on the device: offer it back first
+      if (storage.recoverable) { askToRestoreProgress(storage.recoverable); return; }
+      if (!storage.get('firstRunComplete')) ui.showTutorial({ firstRun: true });
+    });
   });
 
   // --- Anki import (lazy) ---
@@ -1399,6 +1470,11 @@ function init() {
     leaderboardModule = mod;
     instrumentLeaderboard(mod.leaderboard);
     setProUiDeps({ lb: mod.leaderboard });
+    // someone else on this device (signed out, or another account): never show them the last account's Pro
+    mod.leaderboard.onAuthEvent(function (event) {
+      if (event === 'SIGNED_OUT') forgetServerPro();
+      else if (event === 'SIGNED_IN') refreshPro({ lb: mod.leaderboard });
+    });
     mod.leaderboard.init().then(function () { refreshPro({ lb: mod.leaderboard }); if (webPayReturn !== 'billing') checkCancelFollowThrough(mod.leaderboard).then(function (r) { if (r) announceCancel(r); }); });
     document.addEventListener('dx:pro-trial-started', function () { ui._showToast('Your free 7-day Pro trial has started! 🎉', 4000); });
     if (webPayReturn === 'success' && webPayItem) {
@@ -1433,6 +1509,7 @@ function init() {
       // back from the billing page: say what is actually true about the subscription
       mod.leaderboard.init().then(function () { return checkCancelFollowThrough(mod.leaderboard); }).then(function (r) { if (r) announceCancel(r); });
     } else if (webPayReturn === 'cancelled') {
+      clearPaymentPending();
       ui._showToast('No problem, nothing was charged.', 2500);
     }
     mod.leaderboard.init().then(function () {
@@ -1724,6 +1801,8 @@ function init() {
     var home = document.getElementById('screenHome');
     if (home && home.classList.contains('active') && !game.running) { ui.renderHome(); document.dispatchEvent(new CustomEvent('dx:coins-changed')); }
   });
+  // Players who already know the app are not walked through the lessons behind the red dots
+  seedLessons(storage);
   // Red dots: new badges, quest rewards and the weekly reward waiting to be claimed
   updateAttentionDots(storage, storage.getDailyQuests());
   document.addEventListener('dx:attention-changed', function () { updateAttentionDots(storage, storage.getDailyQuests()); });
@@ -1736,7 +1815,11 @@ function init() {
   // A red "new" dot goes away for good the first time the player opens that menu, tab or button
   document.addEventListener('click', function (e) {
     var id = discoveryIdFor(e.target);
-    if (id && markExplored(storage, id)) document.dispatchEvent(new CustomEvent('dx:attention-changed'));
+    if (id && markExplored(storage, id)) {
+      document.dispatchEvent(new CustomEvent('dx:attention-changed'));
+      // the first time a red-dotted menu is opened, it shows the player around (lessons.js)
+      if (discoveryActive(storage)) startLesson(id, { ui: ui, isRunning: function () { return game.running || game.paused; } });
+    }
   }, true);
   document.addEventListener('dx:celebrate', function () { ui.showConfetti(true); });
   document.addEventListener('dx:ranked-updated', function (e) {
@@ -2169,7 +2252,10 @@ var pendingDeepLink = null;
 function handleDeepLink(url) {
   if (!leaderboardModule) { pendingDeepLink = url; return; }
   leaderboardModule.leaderboard.handleAuthLink(url).then(function (res) {
-    if (res.success) ui._showToast(res.type === 'recovery' ? 'Choose a new password.' : 'Email confirmed. You are signed in.');
+    if (res.success) {
+      ui._showToast(res.type === 'recovery' ? 'Choose a new password.' : res.type === 'signup' || res.type === 'email_change' ? 'Email confirmed. You are signed in.' : 'You are signed in.');
+      import('@capacitor/browser').then(function (m) { return m.Browser.close(); }).catch(function () { /* the sign-in page may already be closed */ });
+    }
     else if (res.error && res.error !== 'Not an account link') ui._showToast(res.error);
   });
 }

@@ -269,7 +269,7 @@ GRANT EXECUTE ON FUNCTION group_goal_status(uuid, text) TO authenticated;
 ALTER TABLE content_reports ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON content_reports FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON moderation_queue FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON FUNCTION report_content(text, text, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION report_content(text, text, text) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION report_content(text, text, text) TO authenticated;
 
 
@@ -277,7 +277,7 @@ GRANT EXECUTE ON FUNCTION report_content(text, text, text) TO authenticated;
 
 ALTER TABLE client_diagnostics ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON client_diagnostics FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON FUNCTION report_diagnostic(text, text, text, text, text, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION report_diagnostic(text, text, text, text, text, text) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION report_diagnostic(text, text, text, text, text, text) TO authenticated;
 
 
@@ -286,7 +286,7 @@ GRANT EXECUTE ON FUNCTION report_diagnostic(text, text, text, text, text, text) 
 ALTER TABLE app_feedback ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON app_feedback FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON feedback_inbox FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON FUNCTION submit_feedback(text, text, text, text, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION submit_feedback(text, text, text, text, text) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION submit_feedback(text, text, text, text, text) TO authenticated;
 
 
@@ -309,6 +309,13 @@ REVOKE INSERT, UPDATE ON player_saves FROM authenticated;
 GRANT EXECUTE ON FUNCTION push_save(jsonb, integer, timestamptz) TO authenticated;
 GRANT EXECUTE ON FUNCTION force_save(jsonb, integer) TO authenticated;
 
+-- The kept richest save is only reachable through restore_backup_save().
+ALTER TABLE player_saves_backup ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON player_saves_backup FROM anon, authenticated;
+REVOKE ALL ON FUNCTION keep_richest_save(uuid, integer) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION restore_backup_save() FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION restore_backup_save() TO authenticated;
+
 
 -- ==================== RANKED MULTIPLAYER ====================
 -- Nobody reads or writes these tables directly; the functions in schema.sql do.
@@ -321,7 +328,7 @@ ALTER TABLE ranked_reports ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON player_trophies, ranked_queue, ranked_matches, ranked_reports FROM PUBLIC, anon, authenticated;
 
 REVOKE ALL ON FUNCTION ranked_find_match(text), ranked_poll_match(), ranked_cancel(), ranked_report(uuid, text),
-  ranked_settle_stale(), ranked_my_stats(), ranked_top(integer) FROM PUBLIC;
+  ranked_settle_stale(), ranked_my_stats(), ranked_top(integer) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION ranked_find_match(text) TO authenticated;
 GRANT EXECUTE ON FUNCTION ranked_poll_match() TO authenticated;
 GRANT EXECUTE ON FUNCTION ranked_cancel() TO authenticated;
@@ -329,3 +336,12 @@ GRANT EXECUTE ON FUNCTION ranked_report(uuid, text) TO authenticated;
 GRANT EXECUTE ON FUNCTION ranked_settle_stale() TO authenticated;
 GRANT EXECUTE ON FUNCTION ranked_my_stats() TO authenticated;
 GRANT EXECUTE ON FUNCTION ranked_top(integer) TO authenticated;
+
+-- ==================== WHAT A SIGNED-IN PLAYER MAY CHANGE ====================
+-- Row security says WHICH rows; these say WHICH COLUMNS. Without them the person who was asked to be a friend could
+-- rewrite who the friendship is between (making a stranger their "friend" without that stranger agreeing), and anyone
+-- could write their own profile's best score directly instead of through upsert_player_profile.
+REVOKE UPDATE ON friends, match_invites FROM anon, authenticated;
+GRANT UPDATE (status) ON friends, match_invites TO authenticated;
+REVOKE INSERT, UPDATE ON player_profiles FROM anon, authenticated;
+REVOKE DELETE ON player_saves FROM anon, authenticated; -- a cloud save is never deleted from the app (a bug or a hostile page could wipe it); the account deletion removes it

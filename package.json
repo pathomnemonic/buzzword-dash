@@ -18,7 +18,13 @@
     "validate:cards": "node tools/validate-cards.mjs",
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",
-    "test:e2e:debug": "playwright test --debug"
+    "test:e2e:debug": "playwright test --debug",
+    "app:assets": "node tools/make-app-assets.mjs && capacitor-assets generate --android",
+    "app:build": "node tools/build-app.mjs",
+    "app:android": "node tools/build-app.mjs android",
+    "preflight": "node tools/preflight.mjs",
+    "analytics:docs": "node tools/analytics-docs.mjs",
+    "analytics:report": "node tools/analytics-report.mjs"
   },
   "devDependencies": {
     "@capacitor/android": "^8.5.2",
@@ -46,6 +52,7 @@
     "@capacitor-community/text-to-speech": "^8.0.2",
     "@capacitor/app": "^8.1.1",
     "@capacitor/app-launcher": "^8.0.1",
+    "@capacitor/browser": "^8.0.5",
     "@capacitor/core": "^8.5.2",
     "@capacitor/filesystem": "^8.1.4",
     "@capacitor/haptics": "^8.0.2",

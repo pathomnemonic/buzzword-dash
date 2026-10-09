@@ -3,6 +3,7 @@
  * "which save do you want?" dialog. Safe DOM only.
  */
 
+import { enabledProviders, providerLabel, onlyAvailable } from './authproviders.js';
 import { track } from './analytics/index.js';
 import { createElement } from './dom.js';
 
@@ -11,6 +12,27 @@ var INPUT_STYLE = 'width:100%;padding:9px 11px;border-radius:10px;background:rgb
 var _mode = 'signup'; // signup | signin | reset
 var _recovery = false;
 var _busyMessage = '';
+var _external; // which providers Supabase has switched on (null: could not be read)
+var _externalAsked = false;
+var _externalDone = false;
+
+/** A provider's logo, drawn as a small inline picture (no image file, no outside address). */
+function providerMark(parts) {
+  var ns = 'http://www.w3.org/2000/svg';
+  var svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('width', '18');
+  svg.setAttribute('height', '18');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.style.cssText = 'vertical-align:-3px;margin-right:10px';
+  parts.forEach(function (part) {
+    var path = document.createElementNS(ns, 'path');
+    path.setAttribute('d', part.d);
+    path.setAttribute('fill', part.fill);
+    svg.appendChild(path);
+  });
+  return svg;
+}
 
 /** Called by main.js when a password-reset link brings the player back. */
 export function beginPasswordRecovery() {
@@ -117,6 +139,49 @@ function renderGuest(body, deps, status) {
   });
   body.appendChild(tabs);
 
+  // "Continue with Google / Apple": no password to make or remember. "I am new" upgrades this guest in place (so scores,
+  // friends and groups stay); "I have an account" signs in to the one that exists.
+  if (!_externalAsked && deps.leaderboard.getAuthSettings) {
+    _externalAsked = true; // (asked once; the panel is drawn again with the answer)
+    var settled = function (ext) { _external = ext; _externalDone = true; deps.rerender(); };
+    deps.leaderboard.getAuthSettings().then(settled, function () { settled(null); });
+  } else if (!deps.leaderboard.getAuthSettings) {
+    _externalDone = true;
+  }
+  // (no buttons until it is known which work, so none appears and then vanishes)
+  var providers = _mode === 'reset' || !_externalDone ? [] : onlyAvailable(enabledProviders(), _external);
+  if (providers.length) {
+    var row = createElement('div', { className: 'auth-providers' });
+    row.style.cssText = 'display:flex;flex-direction:column;gap:6px;margin:8px 0';
+    providers.forEach(function (p) {
+      var pb = createElement('button', {
+        className: 'btn btn-outline btn-block auth-provider',
+        text: (p.mark ? '' : (p.icon ? p.icon + '  ' : '')) + 'Continue with ' + p.label,
+        attributes: { type: 'button', 'data-provider': p.id }
+      });
+      if (p.mark) pb.insertBefore(providerMark(p.mark), pb.firstChild);
+      pb.addEventListener('click', function () {
+        pb.disabled = true;
+        track('account_event', { action: 'oauth_started', method: p.id });
+        deps.leaderboard.signInWithProvider(p.id, { link: _mode === 'signup' }).then(function (res) {
+          if (res.success) {
+            _busyMessage = 'Opening ' + p.label + '…';
+            deps.rerender();
+            return;
+          }
+          pb.disabled = false;
+          track('account_event', { action: 'oauth_failed', method: p.id });
+          deps.toast(res.error || 'Could not sign in with ' + p.label + '.');
+        });
+      });
+      row.appendChild(pb);
+    });
+    body.appendChild(row);
+    var or = createElement('div', { text: 'or use your email' });
+    or.style.cssText = 'text-align:center;font-size:12px;color:var(--text-muted);margin:6px 0';
+    body.appendChild(or);
+  }
+
   var form = createElement('form');
   form.setAttribute('novalidate', 'novalidate');
   var email = input('email', 'Email address', 'email', 'you@example.com');
@@ -168,6 +233,23 @@ function renderGuest(body, deps, status) {
   });
   body.appendChild(form);
 
+  // No password to remember: one tap on a link emailed to the address typed above
+  if (_mode !== 'reset') {
+    var linkBtn = createElement('button', { className: 'btn btn-outline btn-block', text: '✉ Email me a sign-in link instead', attributes: { type: 'button', 'data-magic': '1' } });
+    linkBtn.style.marginTop = '8px';
+    linkBtn.addEventListener('click', function () {
+      linkBtn.disabled = true;
+      deps.leaderboard.sendSignInLink(email.value, { link: _mode === 'signup' }).then(function (res) {
+        track('account_event', { action: res.success ? 'signin_link_sent' : 'signin_link_failed', method: 'email', ok: !!res.success });
+        linkBtn.disabled = false;
+        if (!res.success) return deps.toast(res.error || 'Could not send the email.');
+        _busyMessage = 'We emailed ' + email.value.trim() + '. Open the link in that email to finish. Check spam if you do not see it.';
+        deps.rerender();
+      });
+    });
+    body.appendChild(linkBtn);
+  }
+
   if (_mode === 'signin') {
     var forgot = createElement('button', { className: 'btn btn-outline btn-sm', text: 'Forgot password?', attributes: { type: 'button' } });
     forgot.addEventListener('click', function () { _mode = 'reset'; _busyMessage = ''; deps.rerender(); });
@@ -192,7 +274,7 @@ function renderGuest(body, deps, status) {
 /** Permanent deletion, behind a clear confirmation (required by the app stores). */
 function deleteAccountButton(deps) {
   var b = button('Delete my account', function () {
-    var ok = window.confirm('Delete your account and all online data (profile, scores, friends, groups and cloud save)? This cannot be undone. Progress saved on this device stays.');
+    var ok = window.confirm('Delete your account and all online data (profile, scores, friends, groups and cloud save)? A subscription that is still billing is cancelled with it, and Pro and items you bought are lost. This cannot be undone. Progress saved on this device stays.');
     if (!ok) return Promise.resolve();
     return deps.leaderboard.deleteAccount().then(function (res) {
       track('account_event', { action: 'delete_requested', ok: !!res.success });
@@ -205,7 +287,7 @@ function deleteAccountButton(deps) {
 }
 
 function renderSignedIn(body, deps, status) {
-  body.appendChild(note('Signed in as ' + status.email, 'var(--accent-green)'));
+  body.appendChild(note('Signed in as ' + status.email + (providerLabel(status.provider) ? ' with ' + providerLabel(status.provider) : ''), 'var(--accent-green)'));
   if (status.pendingEmail) {
     body.appendChild(note('Confirm ' + status.pendingEmail + ' from the email we sent to finish changing your address.', 'var(--accent-gold)'));
   }
@@ -219,6 +301,12 @@ function renderSignedIn(body, deps, status) {
     body.appendChild(note(line, sync.state === 'error' ? 'var(--accent-red)' : null));
     body.appendChild(button('Sync now', function () {
       return deps.cloudSync.sync().then(function () { deps.rerender(); });
+    }));
+    body.appendChild(button('Restore my biggest earlier save', function () {
+      return deps.cloudSync.restoreEarlierCloudSave().then(function (r) {
+        deps.toast(r === 'none' ? 'No earlier save is kept for this account yet.' : 'Restored your biggest earlier save.');
+        deps.rerender();
+      }).catch(function (e) { deps.toast((e && e.message) || 'Could not restore.'); });
     }));
   }
 

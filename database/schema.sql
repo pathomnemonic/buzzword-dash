@@ -154,7 +154,8 @@ CREATE INDEX IF NOT EXISTS match_invites_to_idx ON match_invites (to_user, statu
 -- caller), without exposing who blocked whom.
 CREATE OR REPLACE FUNCTION has_block_between(a uuid, b uuid) RETURNS boolean
 LANGUAGE sql SECURITY DEFINER STABLE SET search_path = public AS $$
-  SELECT EXISTS (
+  -- (only about the caller: asking about two other people's blocks would reveal who blocked whom)
+  SELECT auth.uid() IN (a, b) AND EXISTS (
     SELECT 1 FROM friend_blocks
     WHERE (blocker_id = a AND blocked_id = b) OR (blocker_id = b AND blocked_id = a)
   );
@@ -755,6 +756,63 @@ CREATE TABLE IF NOT EXISTS player_saves (
   updated_at  timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 
+-- The richest save an account has ever had. Whenever a save is replaced, the old one is kept here if it had more play
+-- in it than the backup (or if the new one has less), so a stale or empty device can never destroy real progress.
+CREATE TABLE IF NOT EXISTS player_saves_backup (
+  user_id     uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  data        jsonb NOT NULL,
+  run_count   integer NOT NULL DEFAULT 0,
+  saved_at    timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+
+CREATE OR REPLACE FUNCTION keep_richest_save(p_uid uuid, p_new_runs integer)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  INSERT INTO player_saves_backup (user_id, data, run_count, saved_at)
+  SELECT s.user_id, s.data, s.run_count, clock_timestamp()
+  FROM player_saves s
+  WHERE s.user_id = p_uid
+    AND s.run_count > 0
+    -- only ever replace the backup with something at least as big: a smaller save written over a smaller save must not
+    -- push out the biggest one
+    AND s.run_count >= coalesce((SELECT b.run_count FROM player_saves_backup b WHERE b.user_id = p_uid), 0)
+  ON CONFLICT (user_id) DO UPDATE
+    SET data = excluded.data, run_count = excluded.run_count, saved_at = excluded.saved_at;
+END;
+$$;
+
+-- Put the kept save back as the live one (owner only). Returns the restored save's time, or NULL when there is none.
+CREATE OR REPLACE FUNCTION restore_backup_save()
+RETURNS timestamptz
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  uid uuid := auth.uid();
+  b player_saves_backup%ROWTYPE;
+  new_ts timestamptz := clock_timestamp();
+BEGIN
+  IF uid IS NULL THEN
+    RAISE EXCEPTION 'Not authenticated';
+  END IF;
+  SELECT * INTO b FROM player_saves_backup WHERE user_id = uid;
+  IF NOT FOUND THEN
+    RETURN NULL;
+  END IF;
+  PERFORM keep_richest_save(uid, b.run_count);
+  INSERT INTO player_saves (user_id, data, run_count, updated_at)
+  VALUES (uid, b.data, b.run_count, new_ts)
+  ON CONFLICT (user_id) DO UPDATE
+    SET data = excluded.data, run_count = excluded.run_count, updated_at = excluded.updated_at;
+  RETURN new_ts;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION push_save(p_data jsonb, p_run_count integer, p_base timestamptz)
 RETURNS timestamptz
 LANGUAGE plpgsql
@@ -780,6 +838,7 @@ BEGIN
     IF p_base IS NULL OR current_ts <> p_base THEN
       RETURN NULL;
     END IF;
+    PERFORM keep_richest_save(uid, greatest(p_run_count, 0));
     UPDATE player_saves SET data = p_data, run_count = greatest(p_run_count, 0), updated_at = new_ts
     WHERE user_id = uid;
   ELSE
@@ -812,6 +871,7 @@ BEGIN
   IF pg_column_size(p_data) > 3000000 THEN
     RAISE EXCEPTION 'Save is too large';
   END IF;
+  PERFORM keep_richest_save(uid, greatest(p_run_count, 0));
   INSERT INTO player_saves (user_id, data, run_count, updated_at)
   VALUES (uid, p_data, greatest(p_run_count, 0), new_ts)
   ON CONFLICT (user_id) DO UPDATE
@@ -838,11 +898,22 @@ BEGIN
   IF uid IS NULL THEN
     RAISE EXCEPTION 'Not authenticated';
   END IF;
+  -- A subscription that is still billing must be cancelled first, or it would go on charging an account that no longer
+  -- exists. (The website's delete button does that through the payment function and deletes the account itself.)
+  IF to_regclass('public.pro_entitlements') IS NOT NULL THEN
+    IF EXISTS (SELECT 1 FROM pro_entitlements WHERE user_id = uid AND source = 'stripe' AND plan IN ('monthly', 'yearly', 'pass3m') AND until > now()) THEN
+      RAISE EXCEPTION 'You have a subscription that is still billing. Cancel it first (Settings, Dx Dash Pro, Manage subscription), then delete your account.';
+    END IF;
+  END IF;
+  -- their payment records go too (those tables do not cascade from the login)
+  IF to_regprocedure('public.pro_forget_user(uuid)') IS NOT NULL THEN
+    EXECUTE 'SELECT public.pro_forget_user($1)' USING uid;
+  END IF;
   DELETE FROM auth.users WHERE id = uid;
 END;
 $$;
 
-REVOKE ALL ON FUNCTION delete_my_account() FROM PUBLIC;
+REVOKE ALL ON FUNCTION delete_my_account() FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION delete_my_account() TO authenticated;
 
 
@@ -951,7 +1022,7 @@ BEGIN
   RETURN nxt - cur;
 END;
 $$;
-REVOKE ALL ON FUNCTION ranked_apply(uuid, integer, integer, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION ranked_apply(uuid, integer, integer, text) FROM PUBLIC, anon, authenticated;
 
 -- Settle a match if its reports allow it. Returns true when the match is now settled.
 CREATE OR REPLACE FUNCTION ranked_try_settle(p_match uuid) RETURNS boolean
@@ -999,7 +1070,7 @@ BEGIN
   RETURN true;
 END;
 $$;
-REVOKE ALL ON FUNCTION ranked_try_settle(uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION ranked_try_settle(uuid) FROM PUBLIC, anon, authenticated;
 
 -- Join the queue with a PeerJS room you have just opened. Returns either
 --   {role:'guest', match_id, room_code, ...}  an opponent was waiting: join their room, or
@@ -1150,3 +1221,14 @@ BEGIN
 EXCEPTION WHEN duplicate_object OR undefined_object THEN
   NULL;
 END $$;
+
+-- ==================== WHO MAY CALL THE INTERNAL FUNCTIONS ====================
+-- Supabase gives every new function to the signed-in and signed-out roles by default, and "REVOKE ... FROM PUBLIC" does
+-- not take that away. Anything below is called only by triggers or by other functions that run as the owner, never by
+-- the app, so the app roles must not be able to call it directly.
+REVOKE ALL ON FUNCTION scores_sanity(), scores_keep_best(), activity_rate_limit(),
+  ranked_league_floor(integer), ranked_delta(integer, integer, text), ranked_apply(uuid, integer, integer, text),
+  ranked_try_settle(uuid), keep_richest_save(uuid, integer) FROM PUBLIC, anon, authenticated;
+-- Helpers the row-security rules call while a signed-in player reads: signed-in only
+REVOKE ALL ON FUNCTION has_block_between(uuid, uuid), is_group_member(uuid), can_see_post(uuid, text), can_see_activity(bigint) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION has_block_between(uuid, uuid), is_group_member(uuid), can_see_post(uuid, text), can_see_activity(bigint) TO authenticated;
